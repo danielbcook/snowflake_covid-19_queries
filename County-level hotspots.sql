@@ -87,6 +87,13 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.tjs_geodata_matrix as
 -------------------------------------------------------------------------------------
 -- beginning of tables which should be rebuilt when new COVID data has been loaded --
 -------------------------------------------------------------------------------------
+-- check latest dates from NYT_US_COVID19 table, build rest of tables if the date has moved forward
+SELECT DISTINCT nyt.date
+FROM COVID.PUBLIC.NYT_US_COVID19 nyt
+ORDER BY 1 desc
+LIMIT 5
+;
+
 DROP TABLE IF EXISTS GEO_DATA.PUBLIC.county_hotspots;
 CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.county_hotspots as
  (
@@ -97,7 +104,8 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.county_hotspots as
             WITH all_dates as
             (
                 SELECT DISTINCT date
-                FROM COVID.PUBLIC.CT_US_COVID_TESTS
+                FROM COVID.PUBLIC.NYT_US_COVID19
+                ORDER BY 1 desc
             ),
             counties as
             (
@@ -317,22 +325,6 @@ FROM county_populations
 GROUP BY state_code ORDER BY state_code
 ;
 
--- checking latest dates from NYT_US_COVID19 table
-SELECT date, COUNT(*)
-FROM COVID.PUBLIC.NYT_US_COVID19
-GROUP BY 1
-ORDER BY date desc
-LIMIT 5
-;
-
--- checking latest dates from CT_US_COVID_TESTS table
-SELECT date, COUNT(*)
-FROM COVID.PUBLIC.CT_US_COVID_TESTS
-GROUP BY 1
-ORDER BY date desc
-LIMIT 5
-;
-
 -- latest # of cases by date & state
 SELECT date, state, sum(cases)
 FROM COVID.PUBLIC.NYT_US_COVID19
@@ -520,4 +512,12 @@ FROM GEO_DATA.PUBLIC.pop_center_nearest_county pcnc
 	INNER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo ON (demo.state_name = pcnc.state AND demo.county = pcnc.county)
 WHERE demo.state_name = 'Puerto Rico'
 ORDER BY distance 
+;
+
+-- checking latest dates from CT_US_COVID_TESTS table (this table not used for most queries, COVID.PUBLIC.NYT_US_COVID19 is instead)
+SELECT date, COUNT(*)
+FROM COVID.PUBLIC.CT_US_COVID_TESTS
+GROUP BY 1
+ORDER BY date desc
+LIMIT 5
 ;
