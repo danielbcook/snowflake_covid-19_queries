@@ -1,50 +1,113 @@
-/* distance calculations based on the haversine formula here: http://www.movable-type.co.uk/scripts/latlong.html
--- go to line #90 for the temp tables needing a rebuild upon new COVID data
+/* all distance calculations based on the haversine formula here: http://www.movable-type.co.uk/scripts/latlong.html
 
--- unless the demographic data changes, this table doesn't need to be rebuilt
--- nor is it actually used in JOIN statements elsewhere!
+-- go to line #171 for the temp tables needing a rebuild upon new COVID data
+
+-- code to add a column to a static table and then populate that column
+--ALTER TABLE GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE ADD COLUMN ZIP_ID INTEGER;
+
+--CREATE or REPLACE sequence GEO_DATA.PUBLIC.seq1;
+--UPDATE GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE zgc
+SET ZIP_ID = zip_id_mapping.ZIP_ID_SEQ
+FROM   (
+	WITH all_zips as
+		(
+			SELECT ZIP
+			FROM GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE
+			ORDER BY ZIP    
+		)
+		SELECT ZIP, s.nextval as ZIP_ID_SEQ
+		FROM all_zips, table(getnextval(GEO_DATA.PUBLIC.seq1)) s
+		ORDER BY ZIP    
+	) zip_id_mapping
+WHERE zip_id_mapping.zip = zgc.zip
+;
+
+-- this table isn't actually used in JOIN statements elsewhere! Should re-write to use new county_id column
 DROP TABLE IF EXISTS GEO_DATA.PUBLIC.pop_center_nearest_county;
 CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.pop_center_nearest_county as
-	(
-	  WITH county_pop_center_matrix as
-	  (
-	    WITH pop_centers as
-	        (
-	          SELECT DISTINCT
-							state_code
-							, CASE 
-								WHEN (state_code = 'NY' AND REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
-								ELSE REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '')
-								END as county
-							, SUM(population) as total_population
-							, AVG(latitude) as latitude, AVG(longitude) as longitude
-	          FROM GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo
-	          GROUP BY 1,2
-	          HAVING total_population >= 1000000
-					)
-	    SELECT DISTINCT
-				demo.state_name as state
-				, CASE 
-					WHEN (demo.state_code = 'NY' AND REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
-					ELSE REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '')
-					END as county
-				, tll.latitude as t_lat
-				, tll.longitude as t_long
-				, tll.county as nearest_population_center
-				, 7922 * atan2(sqrt(SQUARE(sin(((AVG(demo.latitude) - t_lat) * pi()/180)/2)) + cos(t_lat * pi()/180) * cos(AVG(demo.latitude) * pi()/180) *  SQUARE(sin(((AVG(demo.longitude) - t_long) * pi()/180)/2))), sqrt(1-SQUARE(sin(((AVG(demo.latitude) - t_lat) * pi()/180)/2)) + cos(t_lat * pi()/180) * cos(AVG(demo.latitude) * pi()/180) *  SQUARE(sin(((AVG(demo.longitude) - t_long) * pi()/180)/2)))) as distance
-				, AVG(demo.latitude) as c_lat
-				, AVG(demo.longitude) as c_long
-	    FROM GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo
-	      FULL OUTER JOIN pop_centers tll
-	    WHERE demo.COUNTY IS NOT NULL -- AND demo.state = 'NY'
-        GROUP BY 1,2,3,4,5
-      ORDER BY COUNTY, DISTANCE
-		)
-	  SELECT ctm.*, (select min(distance) FROM county_pop_center_matrix ctm2 WHERE ctm2.state = ctm.state AND ctm2.county = ctm.county) as min_distance_join
-	  FROM county_pop_center_matrix ctm
-	  WHERE ctm.distance = min_distance_join
-	);
+(
+  WITH county_pop_center_matrix as
+  (
+    WITH pop_centers as
+        (
+          SELECT DISTINCT
+                        state_code
+                        , CASE 
+                            WHEN (state_code = 'NY' AND REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
+                            ELSE REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '')
+                            END as county
+                        , SUM(population) as total_population
+                        , AVG(latitude) as latitude, AVG(longitude) as longitude
+          FROM GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo
+          GROUP BY 1,2
+          HAVING total_population >= 1000000
+                )
+    SELECT DISTINCT
+            demo.state_name as state
+            , CASE 
+                WHEN (demo.state_code = 'NY' AND REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
+                ELSE REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '')
+                END as county
+            , tll.latitude as t_lat
+            , tll.longitude as t_long
+            , tll.county as nearest_population_center
+            , 7922 * atan2(sqrt(SQUARE(sin(((AVG(demo.latitude) - t_lat) * pi()/180)/2)) + cos(t_lat * pi()/180) * cos(AVG(demo.latitude) * pi()/180) *  SQUARE(sin(((AVG(demo.longitude) - t_long) * pi()/180)/2))), sqrt(1-SQUARE(sin(((AVG(demo.latitude) - t_lat) * pi()/180)/2)) + cos(t_lat * pi()/180) * cos(AVG(demo.latitude) * pi()/180) *  SQUARE(sin(((AVG(demo.longitude) - t_long) * pi()/180)/2)))) as distance
+            , AVG(demo.latitude) as c_lat
+            , AVG(demo.longitude) as c_long
+    FROM GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo
+      FULL OUTER JOIN pop_centers tll
+    WHERE demo.COUNTY IS NOT NULL -- AND demo.state = 'NY'
+    GROUP BY 1,2,3,4,5
+  ORDER BY COUNTY, DISTANCE
+    )
+  SELECT ctm.*, (select min(distance) FROM county_pop_center_matrix ctm2 WHERE ctm2.state = ctm.state AND ctm2.county = ctm.county) as min_distance_join
+  FROM county_pop_center_matrix ctm
+  WHERE ctm.distance = min_distance_join
+);
     
+DROP TABLE IF EXISTS GEO_DATA.PUBLIC.county_population_centers;
+CREATE or REPLACE sequence GEO_DATA.PUBLIC.seq1;
+CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.county_population_centers as
+(
+  WITH county_population_centers as
+  (
+    SELECT
+      state_code
+      , CASE 
+        WHEN (state_code = 'NY' AND REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
+        ELSE REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '')
+        END as county
+      , SUM(population) as total_population
+      , AVG(latitude) as latitude
+      , AVG(longitude) as longitude
+    FROM GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE
+    GROUP BY 1,2
+  )
+  SELECT DISTINCT
+        s.nextval as county_id
+      , gdc.county
+      , gdc.state_code
+      , gdc.total_population as population
+      , gdc.latitude
+      , gdc.longitude
+  FROM county_population_centers gdc, table(getnextval(GEO_DATA.PUBLIC.seq1)) s
+)
+;
+
+DROP TABLE IF EXISTS GEO_DATA.PUBLIC.walmart_full_geo;
+CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.walmart_full_geo as
+(
+  SELECT
+    zip_geo.ZIP
+    , zip_geo.state_code
+    , zip_geo.county
+    , zip_geo.city
+    , zip_geo.latitude
+    , zip_geo.longitude
+  FROM GEO_DATA.PUBLIC.WALMART_ZIPS wmz
+      INNER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE zip_geo ON zip_geo.ZIP = wmz.ZIP
+);
+
 -- unless Walmart location data or ZIP geolocation data is reloaded, this table doesn't need to be rebuilt
 DROP TABLE IF EXISTS GEO_DATA.PUBLIC.walmart_geodata_matrix;
 CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.walmart_geodata_matrix as
@@ -59,8 +122,26 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.walmart_geodata_matrix as
   FROM GEO_DATA.PUBLIC.WALMART_ZIPS wmz
       INNER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA zgd ON zgd.ZIP = wmz.ZIP
       FULL OUTER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo
-  WHERE distance <= 150 -- there is no location in the lower 48 more than 150 miles from a Walmart!
+  WHERE distance <= 150 -- there is no ZIP in the lower 48 more than 150 miles from a Walmart!
 );
+
+-- unless Walmart location data or ZIP geolocation data is reloaded, this table doesn't need to be rebuilt
+DROP TABLE IF EXISTS GEO_DATA.PUBLIC.walmart_county_distance_matrix;
+CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.walmart_county_distance_matrix as
+(
+  SELECT 
+    cpc.state_code
+    , cpc.county
+    , cpc.latitude
+    , cpc.longitude
+    , wfg.ZIP as walmart_zip
+    , 7922 * atan2(sqrt(SQUARE(sin(((cpc.latitude - wfg.latitude) * pi()/180)/2)) + cos(wfg.latitude * pi()/180) * cos(cpc.latitude * pi()/180) *  SQUARE(sin(((cpc.longitude - wfg.longitude) * pi()/180)/2))), sqrt(1-SQUARE(sin(((cpc.latitude - wfg.latitude) * pi()/180)/2)) + cos(wfg.latitude * pi()/180) * cos(cpc.latitude * pi()/180) *  SQUARE(sin(((cpc.longitude - wfg.longitude) * pi()/180)/2)))) as distance
+    , cpc.county_id
+  FROM GEO_DATA.PUBLIC.walmart_full_geo wfg
+    FULL OUTER JOIN GEO_DATA.PUBLIC.county_population_centers cpc
+  WHERE distance <= 150 -- there is no county in the lower 48 more than 150 miles from a Walmart!
+)
+;
 
 -- unless TJs location data or ZIP geolocation data is reloaded, this table doesn't need to be rebuilt
 DROP TABLE IF EXISTS GEO_DATA.PUBLIC.tjs_geodata_matrix;
@@ -71,6 +152,7 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.tjs_geodata_matrix as
       WHEN (state_code = 'NY' AND REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
       ELSE REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '')
       END as county
+    , zip_id
     , tjs.ZIP, demo.ZIP as target_zip, zgd.latitude, zgd.longitude
     , 7922 * atan2(sqrt(SQUARE(sin(((zgd.latitude - demo.latitude) * pi()/180)/2)) + cos(demo.latitude * pi()/180) * cos(zgd.latitude * pi()/180) *  SQUARE(sin(((zgd.longitude - demo.longitude) * pi()/180)/2))), sqrt(1-SQUARE(sin(((zgd.latitude - demo.latitude) * pi()/180)/2)) + cos(demo.latitude * pi()/180) * cos(zgd.latitude * pi()/180) *  SQUARE(sin(((zgd.longitude - demo.longitude) * pi()/180)/2)))) as distance
   FROM GEO_DATA.PUBLIC.TJS_ZIPS tjs
@@ -105,66 +187,54 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.county_hotspots as
             (
                 SELECT DISTINCT date
                 FROM COVID.PUBLIC.NYT_US_COVID19
-                ORDER BY 1 desc
             ),
             counties as
             (
               SELECT DISTINCT
-								state_name as state
-								, CASE 
-									WHEN (state_code = 'NY' AND REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
-									ELSE REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '')
-									END as county
-								, state_code
-								FROM GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo              
+                county_id
+                , CASE 
+                  WHEN (state_code = 'NY' AND REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
+                  ELSE REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '')
+                  END as county
+                , state_code
+                , population
+              FROM GEO_DATA.PUBLIC.county_population_centers
             )
-            SELECT DISTINCT all_dates.date, c.state_code, c.county
+            SELECT DISTINCT all_dates.date, state_code, county, county_id, population
             FROM all_dates
-            	FULL OUTER JOIN counties c
-            ORDER BY c.state_code, c.county, date desc
-      ),
-        county_population as
-				(
-					SELECT DISTINCT
-						state_code
-						, CASE 
-							WHEN (state_code = 'NY' AND REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
-							ELSE REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '')
-							END as county
-						, SUM(population) as total
-						FROM GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo
-						GROUP BY 1,2
-				)
+            	FULL OUTER JOIN counties
+      )
       SELECT
       	cdm1.state_code
+				, cdm1.county_id
 				, cdm1.county
 				, cdm1.date
 				, IFNULL(nyt1.CASES,0) as cases
 				, IFNULL(nyt1.CASES_SINCE_PREV_DAY,0) as new_cases
 				, IFNULL(nyt1.DEATHS,0) as deaths
 				, IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0) as new_deaths
-				, county_population.total as total_population
+				, cdm1.population as total_population
 				, new_cases + new_deaths as arithmetic_daily_new_events
 				, CASE 
-			    WHEN IFNULL(nyt1.CASES,0) = 0 THEN 0.0
-			    ELSE IFNULL(nyt1.CASES_SINCE_PREV_DAY,0) / nyt1.CASES
-			    END as daily_case_change_percent
+                  WHEN IFNULL(nyt1.CASES,0) = 0 THEN 0.0
+                  ELSE IFNULL(nyt1.CASES_SINCE_PREV_DAY,0) / nyt1.CASES
+                  END as daily_case_change_percent
 				, CASE 
-			    WHEN IFNULL(nyt1.DEATHS,0) = 0 THEN 0.0
-			    ELSE IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0) / nyt1.DEATHS
-			    END as daily_death_change_percent
-				, IFNULL(nyt1.CASES_SINCE_PREV_DAY,0)/county_population.total as relative_case_growth
-				, IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0)/county_population.total as relative_death_growth
+                  WHEN IFNULL(nyt1.DEATHS,0) = 0 THEN 0.0
+                  ELSE IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0) / nyt1.DEATHS
+                  END as daily_death_change_percent
+				, IFNULL(nyt1.CASES_SINCE_PREV_DAY,0)/cdm1.population as relative_case_growth
+				, IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0)/cdm1.population as relative_death_growth
 				, daily_case_change_percent + daily_death_change_percent as arithmetic_daily_change_percent
 				, daily_case_change_percent * daily_death_change_percent as geometric_daily_change_percent
 				, relative_case_growth + relative_death_growth as arithmetic_relative_change_percent
 				, relative_case_growth * (relative_death_growth) as geometric_relative_change_percent
 				FROM county_date_matrix cdm1
 				  LEFT OUTER JOIN COVID.PUBLIC.NYT_US_COVID19 nyt1 ON (nyt1.date = cdm1.date AND nyt1.ISO3166_2 = cdm1.state_code AND REPLACE(REPLACE(nyt1.county, ' County', ''),' Parish', '') = cdm1.county)
-				  LEFT OUTER JOIN county_population ON (county_population.state_code = cdm1.state_code AND county_population.county = cdm1.county)
     )
 		SELECT DISTINCT 
 			daily_percentages.state_code
+			, daily_percentages.county_id
 			, daily_percentages.county
 			, daily_percentages.date
 			, daily_percentages.cases
@@ -176,15 +246,15 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.county_hotspots as
 			, daily_percentages.geometric_relative_change_percent
 			, daily_percentages.arithmetic_daily_new_events
 		FROM daily_percentages
- );
+);
 
--- Trader Joe's closest to a hotspot
+-- Trader Joe's closest to a county hotspot
 DROP TABLE IF EXISTS GEO_DATA.PUBLIC.tjs_hotspot_proximity;
 CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.tjs_hotspot_proximity as
 SELECT DISTINCT county_hotspots.state_code
   , county_hotspots.county
-  , tgm.ZIP
-  ,(select min(distance) FROM GEO_DATA.PUBLIC.tjs_geodata_matrix tg2 WHERE tg2.state_code = tgm.state_code AND tg2.county = tgm.county) as min_distance_tj
+--  , tgm.ZIP, tgm.zip_id
+  ,(select min(distance) FROM GEO_DATA.PUBLIC.tjs_geodata_matrix tg2 WHERE tg2.zip_id = tgm.zip_id) as min_distance_tj
 FROM GEO_DATA.PUBLIC.county_hotspots
     INNER JOIN GEO_DATA.PUBLIC.tjs_geodata_matrix tgm ON (tgm.state_code = county_hotspots.state_code AND tgm.county = county_hotspots.county)
 WHERE tgm.distance = min_distance_tj
@@ -232,14 +302,17 @@ SELECT DISTINCT
 		ELSE 0
 		END as which_is_closer
 FROM GEO_DATA.PUBLIC.county_hotspots
---	INNER JOIN GEO_DATA.PUBLIC.pop_center_nearest_county cnt ON (cnt.state = county_hotspots.state_code AND cnt.county = county_hotspots.county)
     INNER JOIN GEO_DATA.PUBLIC.tjs_hotspot_proximity thp ON thp.state_code = county_hotspots.state_code AND thp.county = county_hotspots.county
     INNER JOIN GEO_DATA.PUBLIC.wm_hotspot_proximity whp ON whp.state_code = county_hotspots.state_code AND whp.county = county_hotspots.county
-WHERE arithmetic_relative_change_percent >= 0.0005
+--WHERE arithmetic_relative_change_percent >= 0.001
 ORDER BY
 	  arithmetic_relative_change_percent desc -- 1st tiebreaker
 	, 1, 2
-LIMIT 1000;
+LIMIT 500;
+
+SELECT *
+FROM GEO_DATA.PUBLIC.recent_hotspots
+ORDER BY arithmetic_relative_change_percent desc
 
 */
 
@@ -252,7 +325,7 @@ GROUP BY 1 ORDER BY 2 desc
 -- which state has the most "weight" among hotspot calculations?
 SELECT state_code, SUM(arithmetic_relative_change_percent)
 FROM GEO_DATA.PUBLIC.recent_hotspots
-WHERE recent_hotspots.date >= '2020-04-19' -- for the tab titled 'Hotspots > .0005, late April'
+WHERE recent_hotspots.date >= '2020-04-15' -- for the tab titled 'Hotspots > .0005, late April'
 GROUP BY 1 ORDER BY 2 desc
 ;
 
@@ -521,3 +594,57 @@ GROUP BY 1
 ORDER BY date desc
 LIMIT 5
 ;
+
+-- which ZIP has the greatest local density of TJs in the US?
+WITH ALL_COUNTIES_NEAREST_WALMART AS
+(
+  SELECT DISTINCT
+      demo.ZIP
+    , (select min(distance) FROM GEO_DATA.PUBLIC.WALMART_GEODATA_MATRIX wg2 WHERE wg2.target_zip = demo.zip) as min_distance_walmarts
+  FROM GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo
+  WHERE min_distance_walmarts IS NOT NULL
+--    AND demo.state_code NOT IN ('AK','AZ','CA','CO','HI','ID','KS','MT','NE','NV','NM','ND','OR','SD','TX','UT','WA','WY')
+)
+SELECT --wgm.COUNTY,tgm.zip, min_distance_walmarts
+median(min_distance_walmarts)
+FROM ALL_COUNTIES_NEAREST_WALMART
+--    INNER JOIN GEO_DATA.PUBLIC.WALMART_GEODATA_MATRIX wgm ON wgm.target_ZIP = ALL_COUNTIES_NEAREST_WALMART.zip
+WHERE 1=1
+;
+
+-- median distance from a county center to a walmart. Might need to adjust Google/LinkedIn docs according to these results
+-- hotspot proximity calcs may suffer the zip vs. county thing
+WITH county_walmart_distances as
+(
+  SELECT DISTINCT
+      wcdm.county_id
+      , wcdm.state_code
+      , wcdm.county
+      , (select min(distance) FROM GEO_DATA.PUBLIC.walmart_county_distance_matrix wg2 WHERE wg2.county_id = wcdm.county_id) as min_distance_walmart
+  FROM GEO_DATA.PUBLIC.walmart_county_distance_matrix wcdm
+      WHERE wcdm.distance = min_distance_walmart
+      AND state_code != 'AK'
+)
+SELECT
+    MEDIAN(min_distance_walmart) as amdw
+FROM county_walmart_distances
+WHERE state_code NOT IN ('AK','AZ','CA','CO','HI','ID','KS','MT','NE','NV','NM','ND','OR','SD','TX','UT','WA','WY')
+
+
+DROP TABLE IF EXISTS GEO_DATA.PUBLIC.tjs_geodata_matrix;
+CREATE or REPLACE sequence GEO_DATA.PUBLIC.seq1;
+CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.tjs_geodata_matrix as
+(
+  SELECT demo.state_code
+    , CASE 
+      WHEN (state_code = 'NY' AND REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
+      ELSE REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '')
+    , tjs.ZIP, demo.ZIP as target_zip, zgd.latitude, zgd.longitude
+    , 7922 * atan2(sqrt(SQUARE(sin(((zgd.latitude - demo.latitude) * pi()/180)/2)) + cos(demo.latitude * pi()/180) * cos(zgd.latitude * pi()/180) *  SQUARE(sin(((zgd.longitude - demo.longitude) * pi()/180)/2))), sqrt(1-SQUARE(sin(((zgd.latitude - demo.latitude) * pi()/180)/2)) + cos(demo.latitude * pi()/180) * cos(zgd.latitude * pi()/180) *  SQUARE(sin(((zgd.longitude - demo.longitude) * pi()/180)/2)))) as distance
+    , s.nextval as county_id
+  FROM GEO_DATA.PUBLIC.TJS_ZIPS tjs, table(getnextval(GEO_DATA.PUBLIC.seq1)) s
+      INNER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA zgd ON zgd.ZIP = tjs.ZIP
+      FULL OUTER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo
+  WHERE distance <= 600 -- there is no location in the lower 48 more than about 600 miles from a TJs
+);
+
