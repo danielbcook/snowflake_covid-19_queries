@@ -513,3 +513,11 @@ WITH NEAREST_TJ AS
     INNER JOIN NEAREST_TJ ON NEAREST_TJ.target_ZIP = radius.target_zip
   WHERE radius.distance <= NEAREST_TJ.distance
 ;
+
+-- closest large metro area to a given state
+SELECT *
+FROM GEO_DATA.PUBLIC.pop_center_nearest_county pcnc
+	INNER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo ON (demo.state_name = pcnc.state AND demo.county = pcnc.county)
+WHERE demo.state_name = 'Puerto Rico'
+ORDER BY distance 
+;
