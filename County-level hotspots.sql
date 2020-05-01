@@ -108,24 +108,27 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.walmart_full_geo as
       INNER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE zip_geo ON zip_geo.ZIP = wmz.ZIP
 );
 
--- unless Walmart location data or ZIP geolocation data is reloaded, this table doesn't need to be rebuilt
-DROP TABLE IF EXISTS GEO_DATA.PUBLIC.walmart_geodata_matrix;
-CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.walmart_geodata_matrix as
+-- unless TJs location data or ZIP geolocation data is reloaded, this table doesn't need to be rebuilt
+DROP TABLE IF EXISTS GEO_DATA.PUBLIC.tjs_geodata_matrix;
+CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.tjs_geodata_matrix as
 (
-  SELECT demo.state_code
+  SELECT
+    demo.state_code
     , CASE 
-      WHEN (state_code = 'NY' AND REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
+      WHEN (demo.state_code = 'NY' AND REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
       ELSE REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '')
       END as county
-    , wmz.ZIP, demo.ZIP as target_zip, zgd.latitude, zgd.longitude
+    , demo.county_id
+    , demo.latitude
+    , demo.longitude
     , 7922 * atan2(sqrt(SQUARE(sin(((zgd.latitude - demo.latitude) * pi()/180)/2)) + cos(demo.latitude * pi()/180) * cos(zgd.latitude * pi()/180) *  SQUARE(sin(((zgd.longitude - demo.longitude) * pi()/180)/2))), sqrt(1-SQUARE(sin(((zgd.latitude - demo.latitude) * pi()/180)/2)) + cos(demo.latitude * pi()/180) * cos(zgd.latitude * pi()/180) *  SQUARE(sin(((zgd.longitude - demo.longitude) * pi()/180)/2)))) as distance
-  FROM GEO_DATA.PUBLIC.WALMART_ZIPS wmz
-      INNER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA zgd ON zgd.ZIP = wmz.ZIP
+  FROM GEO_DATA.PUBLIC.tjs_ZIPS tjz
+      INNER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA zgd ON zgd.ZIP = tjz.ZIP
       FULL OUTER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo
-  WHERE distance <= 150 -- there is no ZIP in the lower 48 more than 150 miles from a Walmart!
+  WHERE distance <= 600 -- there is no ZIP in the lower 48 more than 600 miles from a tjs!
 );
 
--- unless Walmart location data or ZIP geolocation data is reloaded, this table doesn't need to be rebuilt
+-- unless Walmart location data or ZIP/County geolocation data is reloaded, this table doesn't need to be rebuilt
 DROP TABLE IF EXISTS GEO_DATA.PUBLIC.walmart_county_distance_matrix;
 CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.walmart_county_distance_matrix as
 (
@@ -143,26 +146,28 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.walmart_county_distance_matrix as
 )
 ;
 
--- unless TJs location data or ZIP geolocation data is reloaded, this table doesn't need to be rebuilt
-DROP TABLE IF EXISTS GEO_DATA.PUBLIC.tjs_geodata_matrix;
-CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.tjs_geodata_matrix as
+-- unless Walmart location data or ZIP/County geolocation data is reloaded, this table doesn't need to be rebuilt
+DROP TABLE IF EXISTS GEO_DATA.PUBLIC.walmart_geodata_matrix;
+CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.walmart_geodata_matrix as
 (
-  SELECT demo.state_code
+  SELECT
+    demo.state_code
     , CASE 
-      WHEN (state_code = 'NY' AND REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
+      WHEN (demo.state_code = 'NY' AND REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
       ELSE REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '')
       END as county
-    , zip_id
-    , tjs.ZIP, demo.ZIP as target_zip, zgd.latitude, zgd.longitude
+    , demo.county_id
+    , demo.latitude
+    , demo.longitude
     , 7922 * atan2(sqrt(SQUARE(sin(((zgd.latitude - demo.latitude) * pi()/180)/2)) + cos(demo.latitude * pi()/180) * cos(zgd.latitude * pi()/180) *  SQUARE(sin(((zgd.longitude - demo.longitude) * pi()/180)/2))), sqrt(1-SQUARE(sin(((zgd.latitude - demo.latitude) * pi()/180)/2)) + cos(demo.latitude * pi()/180) * cos(zgd.latitude * pi()/180) *  SQUARE(sin(((zgd.longitude - demo.longitude) * pi()/180)/2)))) as distance
-  FROM GEO_DATA.PUBLIC.TJS_ZIPS tjs
-      INNER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA zgd ON zgd.ZIP = tjs.ZIP
-      FULL OUTER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo
-  WHERE distance <= 600 -- there is no location in the lower 48 more than about 600 miles from a TJs
+  FROM GEO_DATA.PUBLIC.walmart_ZIPS walmart
+      INNER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE zgd ON zgd.ZIP = walmart.ZIP
+      FULL OUTER JOIN GEO_DATA.PUBLIC.COUNTY_POPULATION_CENTERS demo
+  WHERE distance <= 600 -- there is no location in the lower 48 more than about 600 miles from a walmart
 );
 
 -- SELECT COUNT(*) FROM GEO_DATA.PUBLIC.WALMART_GEODATA_MATRIX  LIMIT 100
--- 4241867 rows with <= 150 criteria
+-- 4166454 rows with <= 150 criteria
 -- SELECT COUNT(*) FROM GEO_DATA.PUBLIC.tjs_geodata_matrix  LIMIT 100
 -- 3281977 rows with <= 600 criteria
 
@@ -248,34 +253,34 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.county_hotspots as
 		FROM daily_percentages
 );
 
--- Trader Joe's closest to a county hotspot
+-- find the TJs closest to a county hotspot
+-- correlated subquery runs *a lot* faster than a Window function to determine distance
 DROP TABLE IF EXISTS GEO_DATA.PUBLIC.tjs_hotspot_proximity;
 CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.tjs_hotspot_proximity as
-SELECT DISTINCT county_hotspots.state_code
+SELECT DISTINCT 
+  county_hotspots.state_code
   , county_hotspots.county
---  , tgm.ZIP, tgm.zip_id
-  ,(select min(distance) FROM GEO_DATA.PUBLIC.tjs_geodata_matrix tg2 WHERE tg2.zip_id = tgm.zip_id) as min_distance_tj
+  , tjm.county_id
+  , (select min(distance) FROM GEO_DATA.PUBLIC.tjs_geodata_matrix tj2 WHERE tj2.county_id = tjm.county_id) as min_distance_tjs
 FROM GEO_DATA.PUBLIC.county_hotspots
-    INNER JOIN GEO_DATA.PUBLIC.tjs_geodata_matrix tgm ON (tgm.state_code = county_hotspots.state_code AND tgm.county = county_hotspots.county)
-WHERE tgm.distance = min_distance_tj
-ORDER BY min_distance_tj desc;
+    INNER JOIN GEO_DATA.PUBLIC.tjs_geodata_matrix tjm ON (tjm.county_id = county_hotspots.county_id)
+WHERE tjm.distance = min_distance_tjs
+ORDER BY min_distance_tjs desc;
 
--- SELECT * FROM GEO_DATA.PUBLIC.tjs_hotspot_proximity ORDER BY min_distance_tj desc
-
--- Walmart closest to a hotspot
-DROP TABLE IF EXISTS GEO_DATA.PUBLIC.wm_hotspot_proximity;
-CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.wm_hotspot_proximity as
-SELECT DISTINCT
-	county_hotspots.state_code
-	, county_hotspots.county
-	, wgm.ZIP
-	,(select min(distance) FROM GEO_DATA.PUBLIC.walmart_geodata_matrix wg2 WHERE wg2.state_code = wgm.state_code AND wg2.county = wgm.county) as min_distance_walmart
+-- find the Walmart closest to a county hotspot
+DROP TABLE IF EXISTS GEO_DATA.PUBLIC.walmart_hotspot_proximity;
+CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.walmart_hotspot_proximity as
+SELECT DISTINCT 
+  county_hotspots.state_code
+  , county_hotspots.county
+  , wgm.county_id
+  , (select min(distance) FROM GEO_DATA.PUBLIC.walmart_geodata_matrix wg2 WHERE wg2.county_id = wgm.county_id) as min_distance_walmart
 FROM GEO_DATA.PUBLIC.county_hotspots
-    INNER JOIN GEO_DATA.PUBLIC.walmart_geodata_matrix wgm ON (wgm.state_code = county_hotspots.state_code AND wgm.county = county_hotspots.county)
+    INNER JOIN GEO_DATA.PUBLIC.walmart_geodata_matrix wgm ON (wgm.county_id = county_hotspots.county_id)
 WHERE wgm.distance = min_distance_walmart
 ORDER BY min_distance_walmart desc;
 
--- SELECT * FROM GEO_DATA.PUBLIC.wm_hotspot_proximity WHERE state_code <> 'AK' ORDER BY min_distance_walmart desc
+-- SELECT * FROM GEO_DATA.PUBLIC.walmart_hotspot_proximity WHERE state_code <> 'AK' ORDER BY min_distance_walmart desc
 
 -------------------------------
 -- calculate recent hotspots --
@@ -283,27 +288,26 @@ ORDER BY min_distance_walmart desc;
 DROP TABLE IF EXISTS GEO_DATA.PUBLIC.recent_hotspots;
 CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.recent_hotspots as
 SELECT DISTINCT
-	county_hotspots.county
-	, county_hotspots.state_code
-	, county_hotspots.ARITHMETIC_RELATIVE_CHANGE_PERCENT
-	, county_hotspots.Date
-	, county_hotspots.cases
-	, county_hotspots.new_cases
-	, county_hotspots.deaths
-	, county_hotspots.new_deaths
-	, county_hotspots.total_population
-	, county_hotspots.ARITHMETIC_DAILY_NEW_EVENTS
-	, thp.ZIP as tj_zip
-	, thp.min_distance_tj
-	, whp.ZIP as wm_zip
-	, whp.min_distance_walmart
-	, CASE 
-		WHEN thp.min_distance_tj <= whp.min_distance_walmart THEN 1
-		ELSE 0
-		END as which_is_closer
+  county_hotspots.state_code
+  , county_hotspots.county
+  , county_hotspots.county_id
+  , county_hotspots.ARITHMETIC_RELATIVE_CHANGE_PERCENT
+  , county_hotspots.Date
+  , county_hotspots.cases
+  , county_hotspots.new_cases
+  , county_hotspots.deaths
+  , county_hotspots.new_deaths
+  , county_hotspots.total_population
+  , county_hotspots.ARITHMETIC_DAILY_NEW_EVENTS
+  , thp.min_distance_tjs
+  , whp.min_distance_walmart
+  , CASE 
+    WHEN thp.min_distance_tjs <= whp.min_distance_walmart THEN 1
+    ELSE 0
+    END as which_is_closer
 FROM GEO_DATA.PUBLIC.county_hotspots
-    INNER JOIN GEO_DATA.PUBLIC.tjs_hotspot_proximity thp ON thp.state_code = county_hotspots.state_code AND thp.county = county_hotspots.county
-    INNER JOIN GEO_DATA.PUBLIC.wm_hotspot_proximity whp ON whp.state_code = county_hotspots.state_code AND whp.county = county_hotspots.county
+    LEFT OUTER JOIN GEO_DATA.PUBLIC.tjs_hotspot_proximity thp ON thp.county_id = county_hotspots.county_id
+    LEFT OUTER JOIN GEO_DATA.PUBLIC.walmart_hotspot_proximity whp ON whp.county_id = county_hotspots.county_id
 --WHERE arithmetic_relative_change_percent >= 0.001
 ORDER BY
 	  arithmetic_relative_change_percent desc -- 1st tiebreaker
@@ -312,6 +316,7 @@ LIMIT 500;
 
 SELECT *
 FROM GEO_DATA.PUBLIC.recent_hotspots
+WHERE min_distance_walmart is null
 ORDER BY arithmetic_relative_change_percent desc
 
 */
@@ -330,13 +335,14 @@ GROUP BY 1 ORDER BY 2 desc
 ;
 
 -- data for the spreadsheet tabs in 'county_hotspots.xlsx'
-SELECT DISTINCT state_code, county, min_distance_walmart, min_distance_tj, which_is_closer
+SELECT state_code, county, SUM(ARITHMETIC_RELATIVE_CHANGE_PERCENT), min_distance_walmart, min_distance_tjs, which_is_closer
 FROM GEO_DATA.PUBLIC.recent_hotspots
 WHERE 1=1
 --	AND recent_hotspots.date <= '2020-04-05' -- for the tab titled 'Hotspots > .0005, early April'
 --	AND recent_hotspots.date >= '2020-04-19' -- for the tab titled 'Hotspots > .0005, late April'
-ORDER BY 1, 2
-LIMIT 1000;
+GROUP BY 1,2,4,5,6
+ORDER BY 3 desc
+LIMIT 200;
 
 -- pick some of these to fill the table in the Google doc
 SELECT
@@ -369,6 +375,7 @@ SELECT
 FROM GEO_DATA.PUBLIC.recent_hotspots
 GROUP BY 1,2,8
 ORDER BY SUM(arithmetic_relative_change_percent) desc
+LIMIT 200
 ;
 
 -- US counties by population
@@ -629,22 +636,3 @@ SELECT
     MEDIAN(min_distance_walmart) as amdw
 FROM county_walmart_distances
 WHERE state_code NOT IN ('AK','AZ','CA','CO','HI','ID','KS','MT','NE','NV','NM','ND','OR','SD','TX','UT','WA','WY')
-
-
-DROP TABLE IF EXISTS GEO_DATA.PUBLIC.tjs_geodata_matrix;
-CREATE or REPLACE sequence GEO_DATA.PUBLIC.seq1;
-CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.tjs_geodata_matrix as
-(
-  SELECT demo.state_code
-    , CASE 
-      WHEN (state_code = 'NY' AND REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
-      ELSE REPLACE(REPLACE(demo.COUNTY, ' County', ''),' Parish', '')
-    , tjs.ZIP, demo.ZIP as target_zip, zgd.latitude, zgd.longitude
-    , 7922 * atan2(sqrt(SQUARE(sin(((zgd.latitude - demo.latitude) * pi()/180)/2)) + cos(demo.latitude * pi()/180) * cos(zgd.latitude * pi()/180) *  SQUARE(sin(((zgd.longitude - demo.longitude) * pi()/180)/2))), sqrt(1-SQUARE(sin(((zgd.latitude - demo.latitude) * pi()/180)/2)) + cos(demo.latitude * pi()/180) * cos(zgd.latitude * pi()/180) *  SQUARE(sin(((zgd.longitude - demo.longitude) * pi()/180)/2)))) as distance
-    , s.nextval as county_id
-  FROM GEO_DATA.PUBLIC.TJS_ZIPS tjs, table(getnextval(GEO_DATA.PUBLIC.seq1)) s
-      INNER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA zgd ON zgd.ZIP = tjs.ZIP
-      FULL OUTER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo
-  WHERE distance <= 600 -- there is no location in the lower 48 more than about 600 miles from a TJs
-);
-
