@@ -11,9 +11,9 @@ SET ZIP_ID = zip_id_mapping.ZIP_ID_SEQ
 FROM   (
 	WITH all_zips as
 		(
-			SELECT ZIP
-			FROM GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE
-			ORDER BY ZIP    
+          SELECT ZIP
+          FROM GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE
+          ORDER BY ZIP    
 		)
 		SELECT ZIP, s.nextval as ZIP_ID_SEQ
 		FROM all_zips, table(getnextval(GEO_DATA.PUBLIC.seq1)) s
@@ -31,13 +31,13 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.pop_center_nearest_county as
     WITH pop_centers as
         (
           SELECT DISTINCT
-                        state_code
-                        , CASE 
-                            WHEN (state_code = 'NY' AND REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
-                            ELSE REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '')
-                            END as county
-                        , SUM(population) as total_population
-                        , AVG(latitude) as latitude, AVG(longitude) as longitude
+            state_code
+            , CASE 
+              WHEN (state_code = 'NY' AND REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
+              ELSE REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '')
+              END as county
+            , SUM(population) as total_population
+            , AVG(latitude) as latitude, AVG(longitude) as longitude
           FROM GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo
           GROUP BY 1,2
           HAVING total_population >= 1000000
@@ -73,6 +73,7 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.county_population_centers as
   (
     SELECT
       state_code
+      , state_name
       , CASE 
         WHEN (state_code = 'NY' AND REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '') IN ('New York','Kings','Bronx','Richmond','Queens')) THEN 'New York City'
         ELSE REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '')
@@ -81,12 +82,13 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.county_population_centers as
       , AVG(latitude) as latitude
       , AVG(longitude) as longitude
     FROM GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE
-    GROUP BY 1,2
+    GROUP BY 1,2,3
   )
   SELECT DISTINCT
         s.nextval as county_id
       , gdc.county
       , gdc.state_code
+      , gdc.state_name
       , gdc.total_population as population
       , gdc.latitude
       , gdc.longitude
@@ -125,11 +127,12 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.tjs_geodata_matrix as
   FROM GEO_DATA.PUBLIC.tjs_ZIPS tjz
       INNER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA zgd ON zgd.ZIP = tjz.ZIP
       FULL OUTER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE demo
-  WHERE distance <= 600 -- there is no ZIP in the lower 48 more than 600 miles from a tjs!
+  WHERE distance <= 600 -- there is no county in the lower 48 more than 600 miles from a tjs!
 );
 
 -- unless Walmart location data or ZIP/County geolocation data is reloaded, this table doesn't need to be rebuilt
 DROP TABLE IF EXISTS GEO_DATA.PUBLIC.walmart_county_distance_matrix;
+CREATE or REPLACE sequence GEO_DATA.PUBLIC.seq1;
 CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.walmart_county_distance_matrix as
 (
   SELECT 
@@ -140,7 +143,8 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.walmart_county_distance_matrix as
     , wfg.ZIP as walmart_zip
     , 7922 * atan2(sqrt(SQUARE(sin(((cpc.latitude - wfg.latitude) * pi()/180)/2)) + cos(wfg.latitude * pi()/180) * cos(cpc.latitude * pi()/180) *  SQUARE(sin(((cpc.longitude - wfg.longitude) * pi()/180)/2))), sqrt(1-SQUARE(sin(((cpc.latitude - wfg.latitude) * pi()/180)/2)) + cos(wfg.latitude * pi()/180) * cos(cpc.latitude * pi()/180) *  SQUARE(sin(((cpc.longitude - wfg.longitude) * pi()/180)/2)))) as distance
     , cpc.county_id
-  FROM GEO_DATA.PUBLIC.walmart_full_geo wfg
+    , s.nextval as walmart_seq
+  FROM GEO_DATA.PUBLIC.walmart_full_geo wfg, table(getnextval(GEO_DATA.PUBLIC.seq1)) s
     FULL OUTER JOIN GEO_DATA.PUBLIC.county_population_centers cpc
   WHERE distance <= 150 -- there is no county in the lower 48 more than 150 miles from a Walmart!
 )
@@ -170,6 +174,109 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.walmart_geodata_matrix as
 -- 4166454 rows with <= 150 criteria
 -- SELECT COUNT(*) FROM GEO_DATA.PUBLIC.tjs_geodata_matrix  LIMIT 100
 -- 3281977 rows with <= 600 criteria
+
+CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.COUNTY_DISTANCES (
+	STATE_CODE VARCHAR(2),
+	COUNTY VARCHAR(16777216),
+	COUNTY_ID NUMBER(18,0),
+	LATITUDE FLOAT,
+	LONGITUDE FLOAT,
+	MIN_DISTANCE_WALMART FLOAT,
+	MIN_DISTANCE_TJS FLOAT,
+	WALMART_DENSITY NUMBER(18,0),
+	TJS_DENSITY NUMBER(18,0)
+);
+
+INSERT INTO GEO_DATA.PUBLIC.COUNTY_DISTANCES (STATE_CODE, COUNTY, COUNTY_ID, LATITUDE, LONGITUDE)
+SELECT DISTINCT
+  STATE_CODE
+  , COUNTY
+  , COUNTY_ID
+  , LATITUDE
+  , LONGITUDE
+FROM GEO_DATA.PUBLIC.walmart_county_distance_matrix
+;
+
+UPDATE GEO_DATA.PUBLIC.COUNTY_DISTANCES cd
+SET cd.MIN_DISTANCE_WALMART = wcdm.min_distance_walmart
+FROM
+  (
+    SELECT DISTINCT 
+      wgm.state_code
+      , wgm.county
+      , wgm.county_id
+      , (select min(distance) FROM GEO_DATA.PUBLIC.walmart_county_distance_matrix wg2 WHERE wg2.county_id = wgm.county_id) as min_distance_walmart
+    FROM GEO_DATA.PUBLIC.walmart_county_distance_matrix wgm
+    WHERE wgm.distance = min_distance_walmart
+  ) wcdm
+WHERE wcdm.county_id = cd.county_id
+;
+
+UPDATE GEO_DATA.PUBLIC.COUNTY_DISTANCES cd
+SET cd.MIN_DISTANCE_TJS = tcdm.min_distance_tjs
+FROM
+  (
+    SELECT DISTINCT 
+      wgm.state_code
+      , wgm.county
+      , wgm.county_id
+      , (select min(distance) FROM GEO_DATA.PUBLIC.tjs_county_distance_matrix wg2 WHERE wg2.county_id = wgm.county_id) as min_distance_tjs
+    FROM GEO_DATA.PUBLIC.tjs_county_distance_matrix wgm
+    WHERE wgm.distance = min_distance_tjs
+  ) tcdm
+WHERE tcdm.county_id = cd.county_id
+;
+
+UPDATE GEO_DATA.PUBLIC.COUNTY_DISTANCES cd
+SET TJS_DENSITY = tjd.tjs_density
+FROM
+  (
+  SELECT cd.county_id, COUNT(DISTINCT tcdm.tjs_seq) as tjs_density
+  FROM GEO_DATA.PUBLIC.COUNTY_DISTANCES cd
+    INNER JOIN GEO_DATA.PUBLIC.tjs_county_distance_matrix tcdm ON tcdm.county_id = cd.county_id
+  WHERE tcdm.distance <= cd.MIN_DISTANCE_WALMART
+  GROUP BY 1
+  ) tjd
+WHERE tjd.county_id = cd.county_id
+;
+
+UPDATE GEO_DATA.PUBLIC.COUNTY_DISTANCES cd
+SET WALMART_DENSITY = wmd.walmart_density
+FROM
+  (
+  SELECT cd.county_id, COUNT(DISTINCT wcdm.walmart_seq) as walmart_density
+  FROM GEO_DATA.PUBLIC.COUNTY_DISTANCES cd
+    INNER JOIN GEO_DATA.PUBLIC.walmart_county_distance_matrix wcdm ON wcdm.county_id = cd.county_id
+  WHERE wcdm.distance <= cd.MIN_DISTANCE_TJS
+  GROUP BY 1 ORDER BY 2 desc
+  ) wmd
+WHERE wmd.county_id = cd.county_id
+;
+
+UPDATE GEO_DATA.PUBLIC.COUNTY_DISTANCES cd
+SET TJS_DENSITY = 0
+WHERE TJS_DENSITY IS NULL 
+    AND MIN_DISTANCE_TJS IS NOT NULL
+    AND MIN_DISTANCE_WALMART IS NOT NULL
+    AND MIN_DISTANCE_TJS >= MIN_DISTANCE_WALMART
+;
+UPDATE GEO_DATA.PUBLIC.COUNTY_DISTANCES cd
+SET WALMART_DENSITY = 0
+WHERE WALMART_DENSITY IS NULL 
+    AND MIN_DISTANCE_TJS IS NOT NULL
+    AND MIN_DISTANCE_WALMART IS NOT NULL
+    AND MIN_DISTANCE_WALMART >= MIN_DISTANCE_TJS
+;
+UPDATE GEO_DATA.PUBLIC.COUNTY_DISTANCES cd
+SET WALMART_DENSITY = 0 WHERE MIN_DISTANCE_WALMART IS NULL
+;
+UPDATE GEO_DATA.PUBLIC.COUNTY_DISTANCES cd
+SET TJS_DENSITY = 0 WHERE MIN_DISTANCE_TJS IS NULL
+;
+-- edge case: no TJs within 600 miles, consider the density = 1
+UPDATE GEO_DATA.PUBLIC.COUNTY_DISTANCES cd
+SET WALMART_DENSITY = 1 WHERE MIN_DISTANCE_TJS IS NULL AND MIN_DISTANCE_WALMART > 0
+;
 
 -------------------------------------------------------------------------------------
 -- beginning of tables which should be rebuilt when new COVID data has been loaded --
@@ -202,43 +309,46 @@ CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.county_hotspots as
                   ELSE REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', '')
                   END as county
                 , state_code
+                , state_name
                 , population
               FROM GEO_DATA.PUBLIC.county_population_centers
             )
-            SELECT DISTINCT all_dates.date, state_code, county, county_id, population
+            SELECT DISTINCT all_dates.date, state_code, state_name, county, county_id, population
             FROM all_dates
             	FULL OUTER JOIN counties
       )
       SELECT
-      	cdm1.state_code
-				, cdm1.county_id
-				, cdm1.county
-				, cdm1.date
-				, IFNULL(nyt1.CASES,0) as cases
-				, IFNULL(nyt1.CASES_SINCE_PREV_DAY,0) as new_cases
-				, IFNULL(nyt1.DEATHS,0) as deaths
-				, IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0) as new_deaths
-				, cdm1.population as total_population
-				, new_cases + new_deaths as arithmetic_daily_new_events
-				, CASE 
-                  WHEN IFNULL(nyt1.CASES,0) = 0 THEN 0.0
-                  ELSE IFNULL(nyt1.CASES_SINCE_PREV_DAY,0) / nyt1.CASES
-                  END as daily_case_change_percent
-				, CASE 
-                  WHEN IFNULL(nyt1.DEATHS,0) = 0 THEN 0.0
-                  ELSE IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0) / nyt1.DEATHS
-                  END as daily_death_change_percent
-				, IFNULL(nyt1.CASES_SINCE_PREV_DAY,0)/cdm1.population as relative_case_growth
-				, IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0)/cdm1.population as relative_death_growth
-				, daily_case_change_percent + daily_death_change_percent as arithmetic_daily_change_percent
-				, daily_case_change_percent * daily_death_change_percent as geometric_daily_change_percent
-				, relative_case_growth + relative_death_growth as arithmetic_relative_change_percent
-				, relative_case_growth * (relative_death_growth) as geometric_relative_change_percent
-				FROM county_date_matrix cdm1
-				  LEFT OUTER JOIN COVID.PUBLIC.NYT_US_COVID19 nyt1 ON (nyt1.date = cdm1.date AND nyt1.ISO3166_2 = cdm1.state_code AND REPLACE(REPLACE(nyt1.county, ' County', ''),' Parish', '') = cdm1.county)
+        cdm1.state_code
+        , cdm1.state_name
+        , cdm1.county_id
+        , cdm1.county
+        , cdm1.date
+        , IFNULL(nyt1.CASES,0) as cases
+        , IFNULL(nyt1.CASES_SINCE_PREV_DAY,0) as new_cases
+        , IFNULL(nyt1.DEATHS,0) as deaths
+        , IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0) as new_deaths
+        , cdm1.population as total_population
+        , new_cases + new_deaths as arithmetic_daily_new_events
+        , CASE 
+            WHEN IFNULL(nyt1.CASES,0) = 0 THEN 0.0
+            ELSE IFNULL(nyt1.CASES_SINCE_PREV_DAY,0) / nyt1.CASES
+            END as daily_case_change_percent
+        , CASE 
+            WHEN IFNULL(nyt1.DEATHS,0) = 0 THEN 0.0
+            ELSE IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0) / nyt1.DEATHS
+            END as daily_death_change_percent
+        , IFNULL(nyt1.CASES_SINCE_PREV_DAY,0)/cdm1.population as relative_case_growth
+        , IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0)/cdm1.population as relative_death_growth
+        , daily_case_change_percent + daily_death_change_percent as arithmetic_daily_change_percent
+        , daily_case_change_percent * daily_death_change_percent as geometric_daily_change_percent
+        , relative_case_growth + relative_death_growth as arithmetic_relative_change_percent
+        , relative_case_growth * (relative_death_growth) as geometric_relative_change_percent
+        FROM county_date_matrix cdm1
+            LEFT OUTER JOIN COVID.PUBLIC.NYT_US_COVID19 nyt1 ON (nyt1.date = cdm1.date AND nyt1.ISO3166_2 = cdm1.state_code AND REPLACE(REPLACE(nyt1.county, ' County', ''),' Parish', '') = cdm1.county)
     )
 		SELECT DISTINCT 
 			daily_percentages.state_code
+			, daily_percentages.state_name
 			, daily_percentages.county_id
 			, daily_percentages.county
 			, daily_percentages.date
@@ -265,7 +375,8 @@ SELECT DISTINCT
 FROM GEO_DATA.PUBLIC.county_hotspots
     INNER JOIN GEO_DATA.PUBLIC.tjs_geodata_matrix tjm ON (tjm.county_id = county_hotspots.county_id)
 WHERE tjm.distance = min_distance_tjs
-ORDER BY min_distance_tjs desc;
+ORDER BY min_distance_tjs desc
+;
 
 -- find the Walmart closest to a county hotspot
 DROP TABLE IF EXISTS GEO_DATA.PUBLIC.walmart_hotspot_proximity;
@@ -278,7 +389,8 @@ SELECT DISTINCT
 FROM GEO_DATA.PUBLIC.county_hotspots
     INNER JOIN GEO_DATA.PUBLIC.walmart_geodata_matrix wgm ON (wgm.county_id = county_hotspots.county_id)
 WHERE wgm.distance = min_distance_walmart
-ORDER BY min_distance_walmart desc;
+ORDER BY min_distance_walmart desc
+;
 
 -- SELECT * FROM GEO_DATA.PUBLIC.walmart_hotspot_proximity WHERE state_code <> 'AK' ORDER BY min_distance_walmart desc
 
@@ -289,6 +401,7 @@ DROP TABLE IF EXISTS GEO_DATA.PUBLIC.recent_hotspots;
 CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.recent_hotspots as
 SELECT DISTINCT
   county_hotspots.state_code
+  , county_hotspots.state_name
   , county_hotspots.county
   , county_hotspots.county_id
   , county_hotspots.ARITHMETIC_RELATIVE_CHANGE_PERCENT
@@ -365,7 +478,8 @@ SELECT
 		WHEN state_code = 'LA' THEN CONCAT(county,' Parish')
 		ELSE CONCAT(county,' County')
 		END as county
-	, state_code
+    , state_name
+    , state_code
 	, SUM(arithmetic_relative_change_percent)
 	, MAX(cases)
 	, MAX(new_cases)
@@ -373,8 +487,28 @@ SELECT
 	, MAX(new_deaths)
 	, total_population
 FROM GEO_DATA.PUBLIC.recent_hotspots
-GROUP BY 1,2,8
+GROUP BY 1,2,3,9
 ORDER BY SUM(arithmetic_relative_change_percent) desc
+LIMIT 200
+;
+
+-- county preparedness metric, F-19
+SELECT 
+    rh.state_code
+	, rh.county
+	, SUM(rh.ARITHMETIC_RELATIVE_CHANGE_PERCENT) as weight
+	, ch.total_population as population
+    , 100*(cd.WALMART_DENSITY + cd.TJS_DENSITY) * weight / population as "F-19"
+	, cd.WALMART_DENSITY
+	, cd.TJS_DENSITY
+FROM GEO_DATA.PUBLIC.recent_hotspots rh
+    INNER JOIN GEO_DATA.PUBLIC.COUNTY_DISTANCES cd ON cd.county_id = rh.county_id
+    INNER JOIN GEO_DATA.PUBLIC.COUNTY_HOTSPOTS ch ON ch.county_id = rh.county_id
+WHERE 1=1
+--	AND rh.date <= '2020-03-15' -- for the tab titled 'Hotspots > .0005, early April'
+--	AND rh.date >= '2020-04-29' -- for the tab titled 'Hotspots > .0005, late April'
+GROUP BY rh.state_code, rh.county, cd.WALMART_DENSITY, cd.TJS_DENSITY, ch.total_population
+ORDER BY "F-19" desc
 LIMIT 200
 ;
 
@@ -628,7 +762,7 @@ WITH county_walmart_distances as
       , wcdm.state_code
       , wcdm.county
       , (select min(distance) FROM GEO_DATA.PUBLIC.walmart_county_distance_matrix wg2 WHERE wg2.county_id = wcdm.county_id) as min_distance_walmart
-  FROM GEO_DATA.PUBLIC.walmart_county_distance_matrix wcdm
+  FROM GEO_DATA.PUBLIC.walmart_geodata_matrix wcdm
       WHERE wcdm.distance = min_distance_walmart
       AND state_code != 'AK'
 )
@@ -636,3 +770,85 @@ SELECT
     MEDIAN(min_distance_walmart) as amdw
 FROM county_walmart_distances
 WHERE state_code NOT IN ('AK','AZ','CA','CO','HI','ID','KS','MT','NE','NV','NM','ND','OR','SD','TX','UT','WA','WY')
+
+SELECT *
+FROM GEO_DATA.PUBLIC.recent_hotspots
+WHERE state_code = 'TN'
+ORDER BY (new_cases+new_deaths)/total_population desc
+
+
+
+SELECT 
+  cpc.state_code
+  , cpc.county
+  , cpc.latitude
+  , cpc.longitude
+  , wfg.ZIP as walmart_zip
+  , 7922 * atan2(sqrt(SQUARE(sin(((cpc.latitude - wfg.latitude) * pi()/180)/2)) + cos(wfg.latitude * pi()/180) * cos(cpc.latitude * pi()/180) *  SQUARE(sin(((cpc.longitude - wfg.longitude) * pi()/180)/2))), sqrt(1-SQUARE(sin(((cpc.latitude - wfg.latitude) * pi()/180)/2)) + cos(wfg.latitude * pi()/180) * cos(cpc.latitude * pi()/180) *  SQUARE(sin(((cpc.longitude - wfg.longitude) * pi()/180)/2)))) as distance
+  , cpc.county_id
+FROM GEO_DATA.PUBLIC.walmart_full_geo wfg
+  FULL OUTER JOIN GEO_DATA.PUBLIC.county_population_centers cpc
+WHERE distance <= 150 -- there is no county in the lower 48 more than 150 miles from a Walmart!
+ORDER BY 1,2,6
+LIMIT 100
+
+
+DROP TABLE IF EXISTS GEO_DATA.PUBLIC.tjs_full_geo;
+CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.tjs_full_geo as
+(
+  SELECT
+    zip_geo.ZIP
+    , zip_geo.state_code
+    , zip_geo.county
+    , zip_geo.city
+    , zip_geo.latitude
+    , zip_geo.longitude
+  FROM GEO_DATA.PUBLIC.tjs_ZIPS wmz
+      INNER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE zip_geo ON zip_geo.ZIP = wmz.ZIP
+);
+
+DROP TABLE IF EXISTS GEO_DATA.PUBLIC.tjs_county_distance_matrix;
+CREATE or REPLACE sequence GEO_DATA.PUBLIC.seq1;
+CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.tjs_county_distance_matrix as
+(
+  SELECT 
+    cpc.state_code
+    , cpc.county
+    , cpc.latitude
+    , cpc.longitude
+    , wfg.ZIP as tjs_zip
+    , 7922 * atan2(sqrt(SQUARE(sin(((cpc.latitude - wfg.latitude) * pi()/180)/2)) + cos(wfg.latitude * pi()/180) * cos(cpc.latitude * pi()/180) *  SQUARE(sin(((cpc.longitude - wfg.longitude) * pi()/180)/2))), sqrt(1-SQUARE(sin(((cpc.latitude - wfg.latitude) * pi()/180)/2)) + cos(wfg.latitude * pi()/180) * cos(cpc.latitude * pi()/180) *  SQUARE(sin(((cpc.longitude - wfg.longitude) * pi()/180)/2)))) as distance
+    , cpc.county_id
+    , s.nextval as tjs_seq
+  FROM GEO_DATA.PUBLIC.tjs_full_geo wfg, table(getnextval(GEO_DATA.PUBLIC.seq1)) s
+    FULL OUTER JOIN GEO_DATA.PUBLIC.county_population_centers cpc
+  WHERE distance <= 600 -- there is no county in the lower 48 more than 150 miles from a tjs!
+)
+;
+
+SELECT COUNT(DISTINCT wcdm.walmart_seq)
+FROM GEO_DATA.PUBLIC.tjs_county_distance_matrix tcdm
+    INNER JOIN GEO_DATA.PUBLIC.walmart_county_distance_matrix wcdm ON wcdm.county_id = tcdm.county_id
+WHERE wcdm.COUNTY_id = 1
+    AND wcdm.distance <= (SELECT min(distance) FROM GEO_DATA.PUBLIC.tjs_county_distance_matrix where county_id = 1)
+
+SELECT COUNT(DISTINCT tcdm.tjs_seq)
+FROM GEO_DATA.PUBLIC.tjs_county_distance_matrix tcdm
+    INNER JOIN GEO_DATA.PUBLIC.walmart_county_distance_matrix wcdm ON tcdm.county_id = wcdm.county_id
+WHERE tcdm.COUNTY_id = 1
+    AND tcdm.distance <= (SELECT min(distance) FROM GEO_DATA.PUBLIC.walmart_county_distance_matrix where county_id = 1)
+
+
+-- find the Walmart closest to a county hotspot
+DROP TABLE IF EXISTS GEO_DATA.PUBLIC.walmart_hotspot_proximity;
+CREATE TEMPORARY TABLE GEO_DATA.PUBLIC.walmart_hotspot_proximity as
+SELECT DISTINCT 
+  wgm.state_code
+  , wgm.county
+  , wgm.county_id
+  , (select min(distance) FROM GEO_DATA.PUBLIC.walmart_county_distance_matrix wg2 WHERE wg2.county_id = wgm.county_id) as min_distance_walmart
+FROM GEO_DATA.PUBLIC.walmart_county_distance_matrix wgm
+WHERE wgm.distance = min_distance_walmart
+ORDER BY min_distance_walmart desc
+;
+
