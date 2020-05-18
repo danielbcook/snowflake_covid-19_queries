@@ -250,7 +250,7 @@ CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.county_hotspots as
               SELECT DISTINCT
                 county_id
                 , CASE 
-                  WHEN COUNTY_ID IN (1831,1852,1859,1869,1871) THEN 'New York City' -- collapse all 5 counties to NYC, because NYT data demands it
+                  WHEN GEO_ID IN ('0500000US36005','0500000US36047','0500000US36061','0500000US36081','0500000US36085') THEN 'New York City' -- collapse all 5 counties to NYC, because NYT data demands it
                   ELSE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COUNTY, ' County', ''),' Parish', ''),' Census Area', ''),' and Borough', ''),' Borough', ''),' Municipality', '')
                   END as county
                 , state_code
@@ -447,7 +447,7 @@ WITH collapsed_counties as
 		, REPLACE(cg.GEO_ID,'0500000US','') as geoid_trunc
 		, usc.county_id
 		, CASE 
-			WHEN usc.COUNTY_ID IN (1831,1852,1859,1869,1871) THEN 'New York City' -- collapse all 5 boroughs to "NYC", because NYT data requires it
+			WHEN usc.GEO_ID IN ('0500000US36005','0500000US36047','0500000US36061','0500000US36081','0500000US36085') THEN 'New York City' -- collapse all 5 boroughs to "NYC", because NYT data requires it
 			ELSE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(usc.COUNTY, ' County', ''),' Parish', ''),' Census Area', ''),' and Borough', ''),' Borough', ''),' Municipality', '')
 			END as county
 		, usc.state_code
@@ -489,6 +489,8 @@ GROUP BY
 ;
 
 -- rank each US county from 1 to 3100+, for each of the co-factors
+-- the RANK() function is 'sparse' rather than dense. For example if 3 counties are all tied in some metric, the next county after than will be ranked #4
+-- if I used DENSE_RANK() instead it would pack all ranks together such that the highest would be 3100 or so.
 CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.aggregate_rankings as
 (
   WITH county_density as
@@ -555,18 +557,16 @@ CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.aggregate_rankings as
 )
 ;
 
--- which co-factors are the most relevant? (low number means stronger)
-WITH top_200_hotspots as
+-- which co-factors are the most relevant? (lower average rank() value means stronger influence by that co-factor)
+WITH top_hotspots as
 (
   SELECT *
-  FROM aggregate_rankings
-  WHERE weight IS NOT NULL
-  ORDER BY weight desc
-  LIMIT 200
+  FROM aggregate_rankings  
+  WHERE weight >= (SELECT MEDIAN(weight) + StdDev(weight) FROM aggregate_rankings) -- debating whether to use MEDIAN() or AVG()
 ), pivoted as
 (
   SELECT
-	 CAST(MEDIAN(DENSITY_RANK_SEQUENTIAL) as float) as DENSITY_AVERAGE -- debating whether to use either MEDIAN() or MEDIAN()
+	 CAST(MEDIAN(DENSITY_RANK_SEQUENTIAL) as float) as DENSITY_AVERAGE -- debating whether to use MEDIAN() or AVG()
 	,CAST(MEDIAN(UNINSURED_RANK_SEQUENTIAL) as float) as UNINSURED_AVERAGE
 	,CAST(MEDIAN(POVERTY_RANK_SEQUENTIAL) as float) as POVERTY_AVERAGE
 	,CAST(MEDIAN(NON_WHITE_RANK_SEQUENTIAL) as float) as NON_WHITE_AVERAGE
@@ -576,7 +576,7 @@ WITH top_200_hotspots as
 	,CAST(MEDIAN(OVER65_RANK_SEQUENTIAL) as float) as OVER65_AVERAGE
 	,CAST(MEDIAN(WALMART_RANK_SEQUENTIAL) as float) as WALMART_AVERAGE
 --	,CAST(MEDIAN(TJS_RANK) as float) as TJS_AVERAGE
-   FROM top_200_hotspots
+   FROM top_hotspots
 )
 SELECT * FROM pivoted
     UNPIVOT(average for factor in (DENSITY_AVERAGE, UNINSURED_AVERAGE, POVERTY_AVERAGE, NON_WHITE_AVERAGE, HOUSEHOLD_SIZE_AVERAGE, DISABILITY_AVERAGE, GRADUATE_AVERAGE, OVER65_AVERAGE, WALMART_AVERAGE))
