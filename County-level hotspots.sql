@@ -1,4 +1,5 @@
 /* all distance calculations based on the haversine formula here: http://www.movable-type.co.uk/scripts/latlong.html
+-- US County GEOJSON files obtained here: https://eric.clst.org/tech/usgeojson/ (oddly, missing #1 predicted hotspot Oglala Lakota SD)
 
 -- go to line #15 to start rebuilding *all* temp tables
 -- go to line #234 for just those tables needing a rebuild upon new COVID data (assumes temp tables prior to #234 haven't been dropped by Snowflake)
@@ -10,7 +11,7 @@ ORDER BY 1 desc
 LIMIT 5
 ;
 
---SELECT GET_DDL('table','Uninsured') -- to see the definition of a table, possibly mimic it
+--SELECT GET_DDL('table','county_land_area') -- to see the definition of a table, possibly mimic it
 -------------------------------------------------------
 CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.county_population_centers as
 (
@@ -410,7 +411,7 @@ SELECT
 	, total_population
 FROM GEO_DATA.PUBLIC.recent_hotspots
 WHERE 1=1
---	AND recent_hotspots.date < '2020-04-01' -- for the tab titled 'Hotspots > .0005, early April'
+	AND recent_hotspots.date > '2020-05-10' -- for the tab titled 'Hotspots > .0005, early April'
 ORDER BY ARITHMETIC_RELATIVE_CHANGE_PERCENT desc
 LIMIT 100;
 
@@ -430,7 +431,7 @@ SELECT
 FROM GEO_DATA.PUBLIC.recent_hotspots
     INNER JOIN GEO_DATA.PUBLIC.US_COUNTIES usc ON usc.county_id = recent_hotspots.county_id
 WHERE 1=1
-	AND recent_hotspots.date >= '2020-04-20' -- for the tab titled 'Hotspots > .0005, late April'
+	AND recent_hotspots.date >= '2020-05-10' -- for the tab titled 'Hotspots > .0005, late April'
 GROUP BY 1,2,8
 ORDER BY SUM(arithmetic_relative_change_percent) desc
 LIMIT 500
@@ -471,8 +472,8 @@ SELECT
 FROM GEO_DATA.PUBLIC.recent_hotspots rh
     INNER JOIN collapsed_counties cc ON cc.county_id = rh.county_id
 WHERE 1=1
---	AND rh.date <= '2020-03-15' -- for the tab titled 'Hotspots > .0005, early April'
---	AND rh.date >= '2020-05-01' -- for the tab titled 'Hotspots > .0005, late April'
+--	AND rh.date <= '2020-03-05' -- for the tab titled 'Hotspots > .0005, early April'
+--	AND rh.date >= '2020-05-15' -- for the tab titled 'Hotspots > .0005, late April'
 GROUP BY 
   geoid10
 	, geoid_trunc
@@ -538,8 +539,8 @@ CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.aggregate_rankings as
     , IFNULL(f19.TJS_DENSITY,0) as TJS_density
     , IFNULL(f19.TJS_DENSITY,0) / (SELECT MAX(TJS_DENSITY) FROM GEO_DATA.PUBLIC.F19) AS TJS_rank
     , RANK() OVER (ORDER BY IFNULL(f19.TJS_DENSITY,0) desc) AS TJS_rank_sequential
-    , ((0.56*density_rank) + (0.41*uninsured_rank) + (0.42*poverty_rank) + (1.0*non_white_rank) + (0.56*household_size_rank) + (0.31*disability_rank) + (0.38*graduate_rank) + (0.27*over65_rank) + (0.32*walmart_rank) + (0.32*tjs_rank)) as average_rank
-    , ((0.56*weight*density_rank) + (0.41*weight*uninsured_rank) + (0.42*weight*poverty_rank) + (1.0*weight*non_white_rank) + (0.56*weight*household_size_rank) + (0.31*weight*disability_rank) + (0.38*weight*graduate_rank) + (0.27*weight*over65_rank) + (0.32*weight*walmart_rank)  + (0.32*weight*tjs_rank)) as weighted_average_rank
+    , ((1.0*IFNULL(non_white_rank,0)) + (0.69*IFNULL(household_size_rank,0)) + (0.55*IFNULL(density_rank,0)) + (0.43*IFNULL(uninsured_rank,0)) + (0.43*IFNULL(poverty_rank,0)) + (0.39*IFNULL(graduate_rank,0)) + (0.29*IFNULL(walmart_rank,0)) + (0.25*IFNULL(disability_rank,0)) + (0.24*IFNULL(over65_rank,0))) as average_rank
+    , ((1.0*weight*IFNULL(non_white_rank,0)) + (0.69*weight*IFNULL(household_size_rank,0)) + (0.55*weight*IFNULL(density_rank,0)) + (0.43*weight*IFNULL(uninsured_rank,0)) + (0.43*weight*IFNULL(poverty_rank,0)) + (0.39*weight*IFNULL(graduate_rank,0)) + (0.29*weight*IFNULL(walmart_rank,0)) + (0.25*weight*IFNULL(disability_rank,0)) + (0.24*weight*IFNULL(over65_rank,0))) as weighted_average_rank
   FROM COUNTY_GEOIDS cg
     LEFT OUTER JOIN GEO_DATA.PUBLIC.US_COUNTIES usc ON usc.GEO_ID = cg.GEO_ID
     LEFT OUTER JOIN GEO_DATA.PUBLIC.UNINSURED ui ON ui.GEO_ID = cg.GEO_ID
@@ -553,7 +554,7 @@ CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.aggregate_rankings as
     LEFT OUTER JOIN GEO_DATA.PUBLIC.F19 ON F19.GEOID10 = cg.GEO_ID
     INNER JOIN county_density cla ON cla.GEO_ID = cg.GEO_ID
 --  WHERE IFNULL(f19.WEIGHT,0)>0
-  ORDER BY weighted_average_rank desc
+  ORDER BY average_rank desc
 )
 ;
 
@@ -584,7 +585,7 @@ ORDER BY average
 ;
 
 -- to load the choropleth data into Plotly for predictive hotspots
-SELECT GEO_ID, COUNTY, STATE, weighted_average_rank / (SELECT MAX(weighted_average_rank) from aggregate_rankings) as norm_WEIGHT
+SELECT GEO_ID, COUNTY, STATE, average_rank / (SELECT MAX(average_rank) from aggregate_rankings) as norm_WEIGHT
 FROM aggregate_rankings
 WHERE norm_WEIGHT IS NOT NULL
 ORDER BY GEO_ID
@@ -765,7 +766,7 @@ WITH NEAREST_TJ AS
 (
   SELECT target_zip, zip, distance
   FROM GEO_DATA.PUBLIC.tjs_geodata_matrix
-  WHERE target_zip = '34661'
+  WHERE target_zip = '62448'
   ORDER BY distance
   LIMIT 1
 )
@@ -827,10 +828,10 @@ ORDER BY distance
 WITH county_walmart_distances as
 (
   SELECT DISTINCT
-      wcdm.county_id
+      wcdm.GEO_ID
       , wcdm.state_code
       , wcdm.county
-      , (select min(distance) FROM GEO_DATA.PUBLIC.walmart_county_distance_matrix wg2 WHERE wg2.county_id = wcdm.county_id) as min_distance_walmart
+      , (select min(distance) FROM GEO_DATA.PUBLIC.walmart_county_distance_matrix wg2 WHERE wg2.GEO_ID = wcdm.GEO_ID) as min_distance_walmart
   FROM GEO_DATA.PUBLIC.walmart_geodata_matrix wcdm
       WHERE wcdm.distance = min_distance_walmart
       AND state_code != 'AK'
@@ -838,7 +839,7 @@ WITH county_walmart_distances as
 SELECT
     MEDIAN(min_distance_walmart) as amdw
 FROM county_walmart_distances
-WHERE state_code NOT IN ('AK','AZ','CA','CO','HI','ID','KS','MT','NE','NV','NM','ND','OR','SD','TX','UT','WA','WY') -- Western states much more spread out
+--WHERE state_code NOT IN ('AK','AZ','CA','CO','HI','ID','KS','MT','NE','NV','NM','ND','OR','SD','TX','UT','WA','WY') -- Western states much more spread out
 ;
 
 -- all of the walmarts within a radius of a given county center, closer than the nearest TJs
@@ -852,7 +853,7 @@ SELECT DISTINCT
 FROM GEO_DATA.PUBLIC.COUNTY_DISTANCES cd
     FULL OUTER JOIN GEO_DATA.PUBLIC.walmart_geocodes wcdm
     INNER JOIN GEO_DATA.PUBLIC.ZIP_GEODATA_COMPLETE zgd ON zgd.ZIP = wcdm.ZIP
-WHERE cd.state_code = 'MO' AND cd.county = 'Stone'
+WHERE cd.state_code = 'IL' AND cd.county = 'Jasper'
 AND distance <= cd.min_distance_tjs
 ORDER BY distance
 ;
@@ -956,4 +957,14 @@ FROM   (
 		ORDER BY ZIP    
 	) zip_id_mapping
 WHERE zip_id_mapping.zip = zgc.zip;
+
+-- to find counties where the land area is not in the relevant census table
+-- for some reason there are counties, like Oglala Lakota SD, which are not in my GEO_JSON file
+SELECT DISTINCT usc.COUNTY, usc.STATE, usc.GEO_ID, usc.population
+FROM us_counties usc
+    LEFT OUTER JOIN county_land_area cla ON usc.GEO_ID = cla.GEO_ID
+WHERE cla.GEO_ID IS NULL
+
+--INSERT INTO county_land_area (COUNTY, GEO_ID, AREA) VALUES ('Kusilvak Census Area, AK', '0500000US02158', 19673.0)
+
 */
