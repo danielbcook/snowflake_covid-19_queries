@@ -11,8 +11,28 @@ ORDER BY 1 desc
 LIMIT 5
 ;
 
---SELECT GET_DDL('table','county_land_area') -- to see the definition of a table, possibly mimic it
+--SELECT GET_DDL('table','ZIP_GEODATA_COMPLETE') -- to see the definition of a table, possibly mimic it
 -------------------------------------------------------
+CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.county_leans as
+(
+  SELECT
+      cv.fips
+    , PER_GOP_2016
+    , PER_DEM_2016
+    , PER_POINT_DIFF_2016
+    , cv.state_abbr as state_code
+    , cv.county_name as county
+    , usc.population
+    , usc.county_id
+    , CASE 
+      WHEN PER_GOP_2016 >= PER_DEM_2016 THEN true
+      ELSE false
+      END as GOP_COUNTY
+    FROM GEO_DATA.PUBLIC.COUNTY_VOTING cv
+        INNER JOIN GEO_DATA.PUBLIC.US_COUNTIES usc ON REPLACE(usc.GEO_ID,'0500000US','')  = cv.fips
+)
+;
+
 CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.county_population_centers as
 (
   WITH county_population_centers as
@@ -267,22 +287,34 @@ CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.county_hotspots as
         , cdm1.county_id
         , cdm1.county
         , cdm1.date
-        , IFNULL(nyt1.CASES,0) as cases
-        , IFNULL(nyt1.CASES_SINCE_PREV_DAY,0) as new_cases
-        , IFNULL(nyt1.DEATHS,0) as deaths
-        , IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0) as new_deaths
+        , CASE
+          WHEN cdm1.county_id IN (1852,1859,1869,1831,1871) THEN IFNULL(nyt1.CASES,0)/5
+          ELSE IFNULL(nyt1.CASES,0) 
+          END as cases
+        , CASE
+          WHEN cdm1.county_id IN (1852,1859,1869,1831,1871) THEN IFNULL(nyt1.CASES_SINCE_PREV_DAY,0)/5
+          ELSE IFNULL(nyt1.CASES_SINCE_PREV_DAY,0)
+          END as new_cases
+        , CASE
+          WHEN cdm1.county_id IN (1852,1859,1869,1831,1871) THEN IFNULL(nyt1.DEATHS,0)/5
+          ELSE IFNULL(nyt1.DEATHS,0)
+          END as deaths
+        , CASE
+          WHEN cdm1.county_id IN (1852,1859,1869,1831,1871) THEN IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0)/5
+          ELSE IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0)
+          END as new_deaths
         , cdm1.population as total_population
         , new_cases + new_deaths as arithmetic_daily_new_events
         , CASE 
-            WHEN IFNULL(nyt1.CASES,0) = 0 THEN 0.0
-            ELSE IFNULL(nyt1.CASES_SINCE_PREV_DAY,0) / nyt1.CASES
+            WHEN cases = 0 THEN 0.0
+            ELSE new_cases / cases
             END as daily_case_change_percent
         , CASE 
-            WHEN IFNULL(nyt1.DEATHS,0) = 0 THEN 0.0
-            ELSE IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0) / nyt1.DEATHS
+            WHEN deaths = 0 THEN 0.0
+            ELSE new_deaths / deaths
             END as daily_death_change_percent
-        , IFNULL(nyt1.CASES_SINCE_PREV_DAY,0)/cdm1.population as relative_case_growth
-        , IFNULL(nyt1.DEATHS_SINCE_PREV_DAY,0)/cdm1.population as relative_death_growth
+        , new_cases/cdm1.population as relative_case_growth
+        , new_deaths/cdm1.population as relative_death_growth
         , daily_case_change_percent + daily_death_change_percent as arithmetic_daily_change_percent
         , daily_case_change_percent * daily_death_change_percent as geometric_daily_change_percent
         , relative_case_growth + relative_death_growth as arithmetic_relative_change_percent
@@ -304,6 +336,26 @@ CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.county_hotspots as
 			, daily_percentages.geometric_relative_change_percent
 			, daily_percentages.arithmetic_daily_new_events
 		FROM daily_percentages
+);
+
+-- count the GOP vs. Democratic cases and deaths
+CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.red_vs_blue_counties as
+(
+  SELECT  
+      date
+    , GOP_COUNTY
+    , CASE
+      WHEN county_hotspots.state_code IN ('AL','AK','AZ','AR','FL','GA','ID','IN','IA','KS','KY','LA','MI','MS','MT','NE','MO','OK','PA','TN','TX','UT','WV','WY','WI','NC','ND','SD','OH','SC') THEN true
+      WHEN county_hotspots.state_code IN ('CA','CO','CT','DC','DE','HI','IL','ME','MA','MN','NH','NM','NY','WA','MD','NV','NJ','RI','OR','VA','VT') THEN false
+      END as GOP_state
+    , SUM(new_cases) as cases
+    , SUM(new_deaths) as deaths
+  FROM GEO_DATA.PUBLIC.county_hotspots
+      INNER JOIN GEO_DATA.PUBLIC.county_leans cl ON cl.county_id = county_hotspots.county_id
+  WHERE date >= '2020-01-26'
+--    AND date = '2020-04-06'
+  GROUP BY 1,2,3
+  ORDER BY cases desc
 );
 
 -- find the TJs closest to a county hotspot
@@ -363,6 +415,7 @@ ORDER BY
 	, county_hotspots.state_code
   , county_hotspots.county
 ;
+
 -------------------------------------------------------------------------------
 -- end of tables which should be rebuilt when new COVID data has been loaded --
 -------------------------------------------------------------------------------
@@ -375,9 +428,40 @@ GROUP BY 1 ORDER BY 2 desc
 ;
 
 -- which state has the most "weight" among hotspot calculations?
+-- remember to rebuild DAILY_PERCENTAGES
+SELECT state, SUM(arithmetic_relative_change_percent) as weight
+  , CASE
+    WHEN DAILY_PERCENTAGES.state IN ('AL','AK','AZ','AR','FL','GA','ID','IN','IA','KS','KY','LA','MI','MS','MT','NE','MO','OK','PA','TN','TX','UT','WV','WY','WI','NC','ND','SD','OH','SC') THEN true
+    WHEN DAILY_PERCENTAGES.state IN ('CA','CO','CT','DC','DE','HI','IL','ME','MA','MN','NH','NM','NY','WA','MD','NV','NJ','RI','OR','VA','VT') THEN false
+    END as GOP_state
+FROM DAILY_PERCENTAGES 
+WHERE date IN (SELECT DISTINCT TOP 7 date FROM DAILY_PERCENTAGES ORDER BY 1 desc) -- to see the data from the X most recent dates
+GROUP BY state, GOP_state
+ORDER BY weight desc
+;
+
+/* -- former state calculation
 SELECT state_code, SUM(arithmetic_relative_change_percent)
 FROM GEO_DATA.PUBLIC.recent_hotspots
-GROUP BY 1 ORDER BY 2 desc
+WHERE date IN (SELECT DISTINCT TOP 7 date FROM GEO_DATA.PUBLIC.recent_hotspots ORDER BY 1 desc) -- to see the data from the X most recent dates
+GROUP BY 1 ORDER BY SUM(arithmetic_relative_change_percent) desc
+; */
+
+-- which county has the most "weight" among hotspot calculations?
+SELECT 
+    recent_hotspots.state_code
+    , recent_hotspots.county
+    , GOP_COUNTY
+    , CASE
+      WHEN recent_hotspots.state_code IN ('AL','AK','AZ','AR','FL','GA','ID','IN','IA','KS','KY','LA','MI','MS','MT','NE','MO','OK','PA','TN','TX','UT','WV','WY','WI','NC','ND','SD','OH','SC') THEN true
+      WHEN recent_hotspots.state_code IN ('CA','CO','CT','DC','DE','HI','IL','ME','MA','MN','NH','NM','NY','WA','MD','NV','NJ','RI','OR','VA','VT') THEN false
+      END as GOP_state
+    , SUM(arithmetic_relative_change_percent)
+FROM GEO_DATA.PUBLIC.recent_hotspots
+    INNER JOIN GEO_DATA.PUBLIC.county_leans cl ON cl.county_id = recent_hotspots.county_id
+WHERE recent_hotspots.date IN (SELECT DISTINCT TOP 7 date FROM GEO_DATA.PUBLIC.recent_hotspots ORDER BY 1 desc) -- to see the data from the X most recent dates
+GROUP BY 1,2,3,4 ORDER BY SUM(arithmetic_relative_change_percent) desc
+LIMIT 100
 ;
 
 -- data for the spreadsheet tabs in 'county_hotspots.xlsx'
@@ -394,7 +478,7 @@ CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.WEIGHTED_HOTSPOTS as
   FROM GEO_DATA.PUBLIC.recent_hotspots
   WHERE 1=1
 --	AND recent_hotspots.date <= '2020-04-05' -- for the tab titled 'Hotspots > .0005, early April'
-    AND recent_hotspots.date >= '2020-04-19' -- for the tab titled 'Hotspots > .0005, late April'
+    AND recent_hotspots.date IN (SELECT DISTINCT TOP 7 date FROM GEO_DATA.PUBLIC.recent_hotspots ORDER BY 1 desc) -- to see the data from the X most recent dates
   GROUP BY state_code, county, county_id, min_distance_walmart, min_distance_tjs, which_is_closer
   ORDER BY weight desc
 --LIMIT 200
@@ -411,7 +495,7 @@ SELECT
 	, total_population
 FROM GEO_DATA.PUBLIC.recent_hotspots
 WHERE 1=1
-	AND recent_hotspots.date > '2020-05-10' -- for the tab titled 'Hotspots > .0005, early April'
+    AND recent_hotspots.date IN (SELECT DISTINCT TOP 7 date FROM GEO_DATA.PUBLIC.recent_hotspots ORDER BY 1 desc) -- to see the data from the X most recent dates
 ORDER BY ARITHMETIC_RELATIVE_CHANGE_PERCENT desc
 LIMIT 100;
 
@@ -422,6 +506,8 @@ SELECT
 		ELSE CONCAT(usc.county,' County')
 		END as county
 	, recent_hotspots.state_code
+	, recent_hotspots.county_id
+	, usc.GEO_ID
 	, SUM(arithmetic_relative_change_percent)
 	, MAX(cases)
 	, MAX(new_cases)
@@ -431,8 +517,8 @@ SELECT
 FROM GEO_DATA.PUBLIC.recent_hotspots
     INNER JOIN GEO_DATA.PUBLIC.US_COUNTIES usc ON usc.county_id = recent_hotspots.county_id
 WHERE 1=1
-	AND recent_hotspots.date >= '2020-05-10' -- for the tab titled 'Hotspots > .0005, late April'
-GROUP BY 1,2,8
+    AND recent_hotspots.date IN (SELECT DISTINCT TOP 7 date FROM GEO_DATA.PUBLIC.recent_hotspots ORDER BY 1 desc) -- to see the data from the X most recent dates
+GROUP BY 1,2,3,4,total_population
 ORDER BY SUM(arithmetic_relative_change_percent) desc
 LIMIT 500
 ;
@@ -441,154 +527,155 @@ LIMIT 500
 -- county preparedness metric, F-19 --
 --------------------------------------
 CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.F19 as
-WITH collapsed_counties as
-(
-  SELECT DISTINCT
-		cg.GEO_ID as geoid10
-		, REPLACE(cg.GEO_ID,'0500000US','') as geoid_trunc
-		, usc.county_id
-		, CASE 
-			WHEN usc.GEO_ID IN ('0500000US36005','0500000US36047','0500000US36061','0500000US36081','0500000US36085') THEN 'New York City' -- collapse all 5 boroughs to "NYC", because NYT data requires it
-			ELSE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(usc.COUNTY, ' County', ''),' Parish', ''),' Census Area', ''),' and Borough', ''),' Borough', ''),' Municipality', '')
-			END as county
-		, usc.state_code
-		, usc.population
-		, population_65 / usc.population as elder_pop
-		, 1 - (population_white / usc.population) as nonwhite_pop
-		, pl.POVERTY_LEVEL
-		, ui.PERCENT_UNINSURED
-		, cd.WALMART_DENSITY
-		, cd.TJS_DENSITY
-FROM COUNTY_GEOIDS cg
-  INNER JOIN GEO_DATA.PUBLIC.US_COUNTIES usc ON usc.GEO_ID = cg.GEO_ID
-  INNER JOIN GEO_DATA.PUBLIC.UNINSURED ui ON ui.GEO_ID = cg.GEO_ID
-  INNER JOIN GEO_DATA.PUBLIC.POVERTY_LEVEL pl ON pl.GEO_ID = cg.GEO_ID
-  INNER JOIN GEO_DATA.PUBLIC.COUNTY_DISTANCES cd ON cd.county_id = usc.county_id
-  INNER JOIN GEO_DATA.PUBLIC.COUNTY_HOTSPOTS ch ON ch.county_id = cd.county_id
-)
-SELECT 
-    cc.*
-    , SUM(rh.ARITHMETIC_RELATIVE_CHANGE_PERCENT) as weight
-FROM GEO_DATA.PUBLIC.recent_hotspots rh
-    INNER JOIN collapsed_counties cc ON cc.county_id = rh.county_id
-WHERE 1=1
---	AND rh.date <= '2020-03-05' -- for the tab titled 'Hotspots > .0005, early April'
---	AND rh.date >= '2020-05-15' -- for the tab titled 'Hotspots > .0005, late April'
-GROUP BY 
-  geoid10
-	, geoid_trunc
-	, cc.county_id
-	, cc.county
-	, cc.state_code
-	, cc.WALMART_DENSITY
-    , cc.TJS_DENSITY
-	, cc.population
-	, cc.elder_pop
-	, cc.nonwhite_pop
-	, cc.POVERTY_LEVEL
-	, cc.PERCENT_UNINSURED
-;
-
--- rank each US county from 1 to 3100+, for each of the co-factors
--- the RANK() function is 'sparse' rather than dense. For example if 3 counties are all tied in some metric, the next county after than will be ranked #4
--- if I used DENSE_RANK() instead it would pack all ranks together such that the highest would be 3100 or so.
-CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.aggregate_rankings as
-(
-  WITH county_density as
-  ( -- debatable whether density calc should be total area, or just land area. Manhattan is apparently 30% water!
-    SELECT DISTINCT usc.COUNTY, usc.STATE, usc.GEO_ID, usc.population / cla.area as density, usc.population, cla.area
-    FROM county_land_area cla
-        INNER JOIN us_counties usc ON usc.GEO_ID = cla.GEO_ID
-    WHERE cla.area >0
-    ORDER BY density desc
-  )
-  SELECT DISTINCT
-    cg.GEO_ID
-    , REPLACE(usc.GEO_ID,'0500000US','') as geoid_trunc
-    , cg.COUNTY
-    , cg.STATE
-    , IFNULL(f19.WEIGHT,0) as weight
-    , cp.POPULATION
-    , cla.DENSITY
-    , cla.DENSITY / (SELECT MAX(DENSITY) FROM county_density) as density_rank
-    , RANK() OVER (ORDER BY cla.DENSITY desc) AS density_rank_sequential
-    , ui.PERCENT_UNINSURED as UNINSURED
-    , ui.PERCENT_UNINSURED / (SELECT MAX(PERCENT_UNINSURED) FROM GEO_DATA.PUBLIC.UNINSURED) AS uninsured_rank
-    , RANK() OVER (ORDER BY ui.PERCENT_UNINSURED desc) AS uninsured_rank_sequential
-    , pl.POVERTY_LEVEL
-    , pl.POVERTY_LEVEL / (SELECT MAX(POVERTY_LEVEL) FROM GEO_DATA.PUBLIC.POVERTY_LEVEL) AS poverty_rank
-    , RANK() OVER (ORDER BY pl.POVERTY_LEVEL desc) AS poverty_rank_sequential
-    , nw.PERCENT_NON_WHITE
-    , nw.PERCENT_NON_WHITE / (SELECT MAX(PERCENT_NON_WHITE) FROM GEO_DATA.PUBLIC.NON_WHITE nw) AS non_white_rank
-    , RANK() OVER (ORDER BY nw.PERCENT_NON_WHITE desc) AS non_white_rank_sequential
-    , ahs.AVG_SIZE
-    , ahs.AVG_SIZE / (SELECT MAX(AVG_SIZE) FROM GEO_DATA.PUBLIC.AVG_HOUSEHOLD_SIZE) AS household_size_rank
-    , RANK() OVER (ORDER BY ahs.AVG_SIZE desc) AS household_size_rank_sequential
-    , cd.PERCENT_DISABILITY
-    , cd.PERCENT_DISABILITY / (SELECT MAX(PERCENT_DISABILITY) FROM GEO_DATA.PUBLIC.COUNTY_DISABILITY) AS disability_rank
-    , RANK() OVER (ORDER BY cd.PERCENT_DISABILITY desc) AS disability_rank_sequential
-    , hgr.LESS_THAN_HS_GRADUATE
-    , hgr.LESS_THAN_HS_GRADUATE / (SELECT MAX(LESS_THAN_HS_GRADUATE) FROM GEO_DATA.PUBLIC.HS_GRADUATE_RATE) AS graduate_rank
-    , RANK() OVER (ORDER BY hgr.LESS_THAN_HS_GRADUATE desc) AS graduate_rank_sequential
-    , usc.POPULATION_65 / IFNULL(usc.POPULATION,1) as elderly
-    , (usc.POPULATION_65 / IFNULL(usc.POPULATION,1)) / (SELECT MAX(POPULATION_65 / IFNULL(POPULATION,1)) FROM GEO_DATA.PUBLIC.US_COUNTIES) AS over65_rank
-    , RANK() OVER (ORDER BY usc.POPULATION_65 / IFNULL(usc.POPULATION,1) desc) AS over65_rank_sequential
-    , IFNULL(f19.WALMART_DENSITY,0) as walmart_density
-    , IFNULL(f19.WALMART_DENSITY,0) / (SELECT MAX(WALMART_DENSITY) FROM GEO_DATA.PUBLIC.F19) AS walmart_rank
-    , RANK() OVER (ORDER BY IFNULL(f19.WALMART_DENSITY,0) desc) AS walmart_rank_sequential
-    , IFNULL(f19.TJS_DENSITY,0) as TJS_density
-    , IFNULL(f19.TJS_DENSITY,0) / (SELECT MAX(TJS_DENSITY) FROM GEO_DATA.PUBLIC.F19) AS TJS_rank
-    , RANK() OVER (ORDER BY IFNULL(f19.TJS_DENSITY,0) desc) AS TJS_rank_sequential
-    , ((1.0*IFNULL(non_white_rank,0)) + (0.69*IFNULL(household_size_rank,0)) + (0.55*IFNULL(density_rank,0)) + (0.43*IFNULL(uninsured_rank,0)) + (0.43*IFNULL(poverty_rank,0)) + (0.39*IFNULL(graduate_rank,0)) + (0.29*IFNULL(walmart_rank,0)) + (0.25*IFNULL(disability_rank,0)) + (0.24*IFNULL(over65_rank,0))) as average_rank
-    , ((1.0*weight*IFNULL(non_white_rank,0)) + (0.69*weight*IFNULL(household_size_rank,0)) + (0.55*weight*IFNULL(density_rank,0)) + (0.43*weight*IFNULL(uninsured_rank,0)) + (0.43*weight*IFNULL(poverty_rank,0)) + (0.39*weight*IFNULL(graduate_rank,0)) + (0.29*weight*IFNULL(walmart_rank,0)) + (0.25*weight*IFNULL(disability_rank,0)) + (0.24*weight*IFNULL(over65_rank,0))) as weighted_average_rank
+  WITH collapsed_counties as
+  (
+    SELECT DISTINCT
+          cg.GEO_ID as geoid10
+          , REPLACE(cg.GEO_ID,'0500000US','') as geoid_trunc
+          , usc.county_id
+          , CASE 
+              WHEN usc.GEO_ID IN ('0500000US36005','0500000US36047','0500000US36061','0500000US36081','0500000US36085') THEN 'New York City' -- collapse all 5 boroughs to "NYC", because NYT data requires it
+              ELSE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(usc.COUNTY, ' County', ''),' Parish', ''),' Census Area', ''),' and Borough', ''),' Borough', ''),' Municipality', '')
+              END as county
+          , usc.state_code
+          , usc.population
+          , population_65 / usc.population as elder_pop
+          , 1 - (population_white / usc.population) as nonwhite_pop
+          , pl.POVERTY_LEVEL
+          , ui.PERCENT_UNINSURED
+          , cd.WALMART_DENSITY
+          , cd.TJS_DENSITY
   FROM COUNTY_GEOIDS cg
-    LEFT OUTER JOIN GEO_DATA.PUBLIC.US_COUNTIES usc ON usc.GEO_ID = cg.GEO_ID
-    LEFT OUTER JOIN GEO_DATA.PUBLIC.UNINSURED ui ON ui.GEO_ID = cg.GEO_ID
-    LEFT OUTER JOIN GEO_DATA.PUBLIC.POVERTY_LEVEL pl ON pl.GEO_ID = cg.GEO_ID
-    LEFT OUTER JOIN GEO_DATA.PUBLIC.COUNTY_POPULATION cp ON cp.GEO_ID = cg.GEO_ID
-    LEFT OUTER JOIN GEO_DATA.PUBLIC.NON_WHITE nw ON nw.GEO_ID = cg.GEO_ID
-    LEFT OUTER JOIN GEO_DATA.PUBLIC.AVG_HOUSEHOLD_SIZE ahs ON ahs.GEO_ID = cg.GEO_ID
-    LEFT OUTER JOIN GEO_DATA.PUBLIC.COUNTY_DISABILITY cd ON cd.GEO_ID = cg.GEO_ID
-    LEFT OUTER JOIN GEO_DATA.PUBLIC.HS_GRADUATE_RATE hgr ON hgr.GEO_ID = cg.GEO_ID
-    LEFT OUTER JOIN GEO_DATA.PUBLIC.ELDERLY_POPULATION ep ON ep.GEO_ID = cg.GEO_ID
-    LEFT OUTER JOIN GEO_DATA.PUBLIC.F19 ON F19.GEOID10 = cg.GEO_ID
-    INNER JOIN county_density cla ON cla.GEO_ID = cg.GEO_ID
---  WHERE IFNULL(f19.WEIGHT,0)>0
-  ORDER BY average_rank desc
-)
-;
+    INNER JOIN GEO_DATA.PUBLIC.US_COUNTIES usc ON usc.GEO_ID = cg.GEO_ID
+    INNER JOIN GEO_DATA.PUBLIC.UNINSURED ui ON ui.GEO_ID = cg.GEO_ID
+    INNER JOIN GEO_DATA.PUBLIC.POVERTY_LEVEL pl ON pl.GEO_ID = cg.GEO_ID
+    INNER JOIN GEO_DATA.PUBLIC.COUNTY_DISTANCES cd ON cd.county_id = usc.county_id
+    INNER JOIN GEO_DATA.PUBLIC.COUNTY_HOTSPOTS ch ON ch.county_id = cd.county_id
+  )
+  SELECT 
+      cc.*
+      , SUM(rh.ARITHMETIC_RELATIVE_CHANGE_PERCENT) as weight
+  FROM GEO_DATA.PUBLIC.recent_hotspots rh
+      INNER JOIN collapsed_counties cc ON cc.county_id = rh.county_id
+  WHERE 1=1
+  --	AND rh.date <= '2020-03-05' -- for the tab titled 'Hotspots > .0005, early April'
+  --	AND rh.date >= '2020-05-15' -- for the tab titled 'Hotspots > .0005, late April'
+  GROUP BY 
+    geoid10
+      , geoid_trunc
+      , cc.county_id
+      , cc.county
+      , cc.state_code
+      , cc.WALMART_DENSITY
+      , cc.TJS_DENSITY
+      , cc.population
+      , cc.elder_pop
+      , cc.nonwhite_pop
+      , cc.POVERTY_LEVEL
+      , cc.PERCENT_UNINSURED
+  ;
 
--- which co-factors are the most relevant? (lower average rank() value means stronger influence by that co-factor)
-WITH top_hotspots as
-(
-  SELECT *
-  FROM aggregate_rankings  
-  WHERE weight >= (SELECT MEDIAN(weight) + StdDev(weight) FROM aggregate_rankings) -- debating whether to use MEDIAN() or AVG()
-), pivoted as
-(
-  SELECT
-	 CAST(MEDIAN(DENSITY_RANK_SEQUENTIAL) as float) as DENSITY_AVERAGE -- debating whether to use MEDIAN() or AVG()
-	,CAST(MEDIAN(UNINSURED_RANK_SEQUENTIAL) as float) as UNINSURED_AVERAGE
-	,CAST(MEDIAN(POVERTY_RANK_SEQUENTIAL) as float) as POVERTY_AVERAGE
-	,CAST(MEDIAN(NON_WHITE_RANK_SEQUENTIAL) as float) as NON_WHITE_AVERAGE
-	,CAST(MEDIAN(HOUSEHOLD_SIZE_RANK_SEQUENTIAL) as float) as HOUSEHOLD_SIZE_AVERAGE
-	,CAST(MEDIAN(DISABILITY_RANK_SEQUENTIAL) as float) as DISABILITY_AVERAGE
-	,CAST(MEDIAN(GRADUATE_RANK_SEQUENTIAL) as float) as GRADUATE_AVERAGE
-	,CAST(MEDIAN(OVER65_RANK_SEQUENTIAL) as float) as OVER65_AVERAGE
-	,CAST(MEDIAN(WALMART_RANK_SEQUENTIAL) as float) as WALMART_AVERAGE
---	,CAST(MEDIAN(TJS_RANK) as float) as TJS_AVERAGE
-   FROM top_hotspots
-)
-SELECT * FROM pivoted
-    UNPIVOT(average for factor in (DENSITY_AVERAGE, UNINSURED_AVERAGE, POVERTY_AVERAGE, NON_WHITE_AVERAGE, HOUSEHOLD_SIZE_AVERAGE, DISABILITY_AVERAGE, GRADUATE_AVERAGE, OVER65_AVERAGE, WALMART_AVERAGE))
-ORDER BY average
-;
+  -- rank each US county from 1 to 3100+, for each of the co-factors
+  -- the RANK() function is 'sparse' rather than dense. For example if 3 counties are all tied in some metric, the next county after than will be ranked #4
+  -- if I used DENSE_RANK() instead it would pack all ranks together such that the highest would be 3100 or so.
+  CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.aggregate_rankings as
+  (
+    WITH county_density as
+    ( -- debatable whether density calc should be total area, or just land area. Manhattan is apparently 30% water!
+      SELECT DISTINCT usc.COUNTY, usc.STATE, usc.GEO_ID, usc.population / cla.area as density, usc.population, cla.area
+      FROM county_land_area cla
+          INNER JOIN us_counties usc ON usc.GEO_ID = cla.GEO_ID
+      WHERE cla.area >0
+      ORDER BY density desc
+    )
+    SELECT DISTINCT
+      cg.GEO_ID
+      , REPLACE(usc.GEO_ID,'0500000US','') as geoid_trunc
+      , cg.COUNTY
+      , cg.STATE
+      , IFNULL(f19.WEIGHT,0) as weight
+      , cp.POPULATION
+      , cla.DENSITY
+      , cla.DENSITY / (SELECT MAX(DENSITY) FROM county_density) as density_rank
+      , RANK() OVER (ORDER BY cla.DENSITY desc) AS density_rank_sequential
+      , ui.PERCENT_UNINSURED as UNINSURED
+      , ui.PERCENT_UNINSURED / (SELECT MAX(PERCENT_UNINSURED) FROM GEO_DATA.PUBLIC.UNINSURED) AS uninsured_rank
+      , RANK() OVER (ORDER BY ui.PERCENT_UNINSURED desc) AS uninsured_rank_sequential
+      , pl.POVERTY_LEVEL
+      , pl.POVERTY_LEVEL / (SELECT MAX(POVERTY_LEVEL) FROM GEO_DATA.PUBLIC.POVERTY_LEVEL) AS poverty_rank
+      , RANK() OVER (ORDER BY pl.POVERTY_LEVEL desc) AS poverty_rank_sequential
+      , nw.PERCENT_NON_WHITE
+      , nw.PERCENT_NON_WHITE / (SELECT MAX(PERCENT_NON_WHITE) FROM GEO_DATA.PUBLIC.NON_WHITE nw) AS non_white_rank
+      , RANK() OVER (ORDER BY nw.PERCENT_NON_WHITE desc) AS non_white_rank_sequential
+      , ahs.AVG_SIZE
+      , ahs.AVG_SIZE / (SELECT MAX(AVG_SIZE) FROM GEO_DATA.PUBLIC.AVG_HOUSEHOLD_SIZE) AS household_size_rank
+      , RANK() OVER (ORDER BY ahs.AVG_SIZE desc) AS household_size_rank_sequential
+      , cd.PERCENT_DISABILITY
+      , cd.PERCENT_DISABILITY / (SELECT MAX(PERCENT_DISABILITY) FROM GEO_DATA.PUBLIC.COUNTY_DISABILITY) AS disability_rank
+      , RANK() OVER (ORDER BY cd.PERCENT_DISABILITY desc) AS disability_rank_sequential
+      , hgr.LESS_THAN_HS_GRADUATE
+      , hgr.LESS_THAN_HS_GRADUATE / (SELECT MAX(LESS_THAN_HS_GRADUATE) FROM GEO_DATA.PUBLIC.HS_GRADUATE_RATE) AS graduate_rank
+      , RANK() OVER (ORDER BY hgr.LESS_THAN_HS_GRADUATE desc) AS graduate_rank_sequential
+      , usc.POPULATION_65 / IFNULL(usc.POPULATION,1) as elderly
+      , (usc.POPULATION_65 / IFNULL(usc.POPULATION,1)) / (SELECT MAX(POPULATION_65 / IFNULL(POPULATION,1)) FROM GEO_DATA.PUBLIC.US_COUNTIES) AS over65_rank
+      , RANK() OVER (ORDER BY usc.POPULATION_65 / IFNULL(usc.POPULATION,1) desc) AS over65_rank_sequential
+      , IFNULL(f19.WALMART_DENSITY,0) as walmart_density
+      , IFNULL(f19.WALMART_DENSITY,0) / (SELECT MAX(WALMART_DENSITY) FROM GEO_DATA.PUBLIC.F19) AS walmart_rank
+      , RANK() OVER (ORDER BY IFNULL(f19.WALMART_DENSITY,0) desc) AS walmart_rank_sequential
+      , IFNULL(f19.TJS_DENSITY,0) as TJS_density
+      , IFNULL(f19.TJS_DENSITY,0) / (SELECT MAX(TJS_DENSITY) FROM GEO_DATA.PUBLIC.F19) AS TJS_rank
+      , RANK() OVER (ORDER BY IFNULL(f19.TJS_DENSITY,0) desc) AS TJS_rank_sequential
+      , ((1.0*IFNULL(non_white_rank,0)) + (0.69*IFNULL(household_size_rank,0)) + (0.55*IFNULL(density_rank,0)) + (0.43*IFNULL(uninsured_rank,0)) + (0.43*IFNULL(poverty_rank,0)) + (0.39*IFNULL(graduate_rank,0)) + (0.29*IFNULL(walmart_rank,0)) + (0.25*IFNULL(disability_rank,0)) + (0.24*IFNULL(over65_rank,0))) as average_rank
+      , ((1.0*weight*IFNULL(non_white_rank,0)) + (0.69*weight*IFNULL(household_size_rank,0)) + (0.55*weight*IFNULL(density_rank,0)) + (0.43*weight*IFNULL(uninsured_rank,0)) + (0.43*weight*IFNULL(poverty_rank,0)) + (0.39*weight*IFNULL(graduate_rank,0)) + (0.29*weight*IFNULL(walmart_rank,0)) + (0.25*weight*IFNULL(disability_rank,0)) + (0.24*weight*IFNULL(over65_rank,0))) as weighted_average_rank
+    FROM COUNTY_GEOIDS cg
+      LEFT OUTER JOIN GEO_DATA.PUBLIC.US_COUNTIES usc ON usc.GEO_ID = cg.GEO_ID
+      LEFT OUTER JOIN GEO_DATA.PUBLIC.UNINSURED ui ON ui.GEO_ID = cg.GEO_ID
+      LEFT OUTER JOIN GEO_DATA.PUBLIC.POVERTY_LEVEL pl ON pl.GEO_ID = cg.GEO_ID
+      LEFT OUTER JOIN GEO_DATA.PUBLIC.COUNTY_POPULATION cp ON cp.GEO_ID = cg.GEO_ID
+      LEFT OUTER JOIN GEO_DATA.PUBLIC.NON_WHITE nw ON nw.GEO_ID = cg.GEO_ID
+      LEFT OUTER JOIN GEO_DATA.PUBLIC.AVG_HOUSEHOLD_SIZE ahs ON ahs.GEO_ID = cg.GEO_ID
+      LEFT OUTER JOIN GEO_DATA.PUBLIC.COUNTY_DISABILITY cd ON cd.GEO_ID = cg.GEO_ID
+      LEFT OUTER JOIN GEO_DATA.PUBLIC.HS_GRADUATE_RATE hgr ON hgr.GEO_ID = cg.GEO_ID
+      LEFT OUTER JOIN GEO_DATA.PUBLIC.ELDERLY_POPULATION ep ON ep.GEO_ID = cg.GEO_ID
+      LEFT OUTER JOIN GEO_DATA.PUBLIC.F19 ON F19.GEOID10 = cg.GEO_ID
+      INNER JOIN county_density cla ON cla.GEO_ID = cg.GEO_ID
+  --  WHERE IFNULL(f19.WEIGHT,0)>0
+    ORDER BY average_rank desc
+  )
+  ;
+
+  -- which co-factors are the most relevant? (lower average rank() value means stronger influence by that co-factor)
+  WITH top_hotspots as
+  (
+    SELECT *
+    FROM aggregate_rankings  
+    WHERE weight >= (SELECT MEDIAN(weight) + StdDev(weight) FROM aggregate_rankings) -- debating whether to use MEDIAN() or AVG()
+  ), pivoted as
+  (
+    SELECT
+       CAST(MEDIAN(DENSITY_RANK_SEQUENTIAL) as float) as DENSITY_AVERAGE -- debating whether to use MEDIAN() or AVG()
+      ,CAST(MEDIAN(UNINSURED_RANK_SEQUENTIAL) as float) as UNINSURED_AVERAGE
+      ,CAST(MEDIAN(POVERTY_RANK_SEQUENTIAL) as float) as POVERTY_AVERAGE
+      ,CAST(MEDIAN(NON_WHITE_RANK_SEQUENTIAL) as float) as NON_WHITE_AVERAGE
+      ,CAST(MEDIAN(HOUSEHOLD_SIZE_RANK_SEQUENTIAL) as float) as HOUSEHOLD_SIZE_AVERAGE
+      ,CAST(MEDIAN(DISABILITY_RANK_SEQUENTIAL) as float) as DISABILITY_AVERAGE
+      ,CAST(MEDIAN(GRADUATE_RANK_SEQUENTIAL) as float) as GRADUATE_AVERAGE
+      ,CAST(MEDIAN(OVER65_RANK_SEQUENTIAL) as float) as OVER65_AVERAGE
+      ,CAST(MEDIAN(WALMART_RANK_SEQUENTIAL) as float) as WALMART_AVERAGE
+  --	,CAST(MEDIAN(TJS_RANK) as float) as TJS_AVERAGE
+     FROM top_hotspots
+  )
+  SELECT * FROM pivoted
+      UNPIVOT(average for factor in (DENSITY_AVERAGE, UNINSURED_AVERAGE, POVERTY_AVERAGE, NON_WHITE_AVERAGE, HOUSEHOLD_SIZE_AVERAGE, DISABILITY_AVERAGE, GRADUATE_AVERAGE, OVER65_AVERAGE, WALMART_AVERAGE))
+  ORDER BY average
+  ;
 
 -- to load the choropleth data into Plotly for predictive hotspots
 SELECT GEO_ID, COUNTY, STATE, average_rank / (SELECT MAX(average_rank) from aggregate_rankings) as norm_WEIGHT
 FROM aggregate_rankings
 WHERE norm_WEIGHT IS NOT NULL
 ORDER BY GEO_ID
+ORDER BY norm_WEIGHT desc
 ;
 
 -- see how broadly the data is distributed among the co-factors
@@ -968,3 +1055,189 @@ WHERE cla.GEO_ID IS NULL
 --INSERT INTO county_land_area (COUNTY, GEO_ID, AREA) VALUES ('Kusilvak Census Area, AK', '0500000US02158', 19673.0)
 
 */
+
+SELECT *
+FROM aggregate_rankings  
+WHERE weight >= (SELECT AVG(weight) + StdDev(weight) FROM aggregate_rankings) -- debating whether to use MEDIAN() or AVG()
+--ORDER BY weighted_average_rank desc
+ORDER BY weight desc
+
+SELECT * FROM county_hotspots
+WHERE date IN (SELECT DISTINCT date FROM county_hotspots ORDER BY 1 desc LIMIT 7 )
+--AND state_code = 'MD'
+ORDER BY ARITHMETIC_RELATIVE_CHANGE_PERCENT desc
+
+SELECT distinct county, state, fips
+FROM COVID.PUBLIC.NYT_US_COVID19 nyt
+where FIPS IS NULL
+
+SELECT DISTINCT COUNTRY_REGION, PROVINCE_STATE, LAST_UPDATED_DATE
+FROM COVID.PUBLIC.CT_US_COVID_TESTS sd1
+
+-- which states are trending up in positive case rates?
+CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.STATE_CASE_TRENDS as
+(
+  SELECT DATE, COUNTRY_REGION, PROVINCE_STATE, POSITIVE, POSITIVE_SINCE_PREVIOUS_DAY, TOTAL, TOTAL_SINCE_PREVIOUS_DAY, POSITIVE_SINCE_PREVIOUS_DAY /  TOTAL_SINCE_PREVIOUS_DAY AS POSITIVE_GROWTH
+  FROM COVID.PUBLIC.CT_US_COVID_TESTS sd1
+  WHERE 1=1
+    AND TOTAL_SINCE_PREVIOUS_DAY > 0
+    AND POSITIVE_SINCE_PREVIOUS_DAY /  TOTAL_SINCE_PREVIOUS_DAY < 1.0
+)
+
+SELECT * FROM STATE_CASE_TRENDS
+
+CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.STATE_PER_CAPITA_WEIGHT as
+(
+  SELECT state_code, SUM(cases / (total_population/100000)) as cases100
+  FROM GEO_DATA.PUBLIC.recent_hotspots
+  WHERE 1=1
+    AND COUNTY_ID NOT IN (1871,1831,1859,1869,1852)
+    AND date IN (SELECT DISTINCT date FROM county_hotspots ORDER BY 1 desc LIMIT 1 )
+  GROUP BY state_code
+  ORDER BY cases100 desc
+)
+
+SELECT StdDev(weight) FROM aggregate_rankings
+SELECT AVG(weight) FROM aggregate_rankings
+
+-- Red states
+SELECT DISTINCT
+    state_code
+--    , state
+FROM GEO_DATA.PUBLIC.US_COUNTIES
+WHERE state IN ('Alabama','Alaska','Arizona','Arkansas','Florida','Georgia','Idaho','Indiana','Iowa','Kansas','Kentucky','Louisiana','Michigan','Mississippi','Missouri','Montana','Nebraska','North Carolina','North Dakota','Ohio','Oklahoma','Pennsylvania','South Carolina','South Dakota','Tennessee','Texas','Utah','West Virginia','Wisconsin','Wyoming')
+
+-- Blue states
+SELECT DISTINCT
+    state_code
+--    , state
+FROM GEO_DATA.PUBLIC.US_COUNTIES
+WHERE state IN ('California','Colorado','Connecticut','Delaware','District of Columbia','Hawaii','Illinois','Maine','Maryland','Massachusetts','Minnesota','Nevada','New Hampshire','New Jersey','New Mexico','New York','Oregon','Rhode Island','Vermont','Virginia','Washington')
+
+-- Red states, codes
+'AL','AK','AZ','AR','FL','GA','ID','IN','IA','KS','KY','LA','MI','MS','MT','NE','MO','OK','PA','TN','TX','UT','WV','WY','WI','NC','ND','SD','OH','SC'
+-- Blue states, codes
+'CA','CO','CT','DC','DE','HI','IL','ME','MA','MN','NH','NM','NY','WA','MD','NV','NJ','RI','OR','VA','VT'
+
+SELECT *
+FROM COVID.PUBLIC.NYT_US_COVID19
+LIMIT 100
+
+-- most hardcore Republican counties
+SELECT *
+FROM GEO_DATA.PUBLIC.COUNTY_VOTING cv
+    INNER JOIN GEO_DATA.PUBLIC.US_COUNTIES usc ON REPLACE(usc.GEO_ID,'0500000US','')  = cv.fips
+WHERE PER_GOP_2016 > PER_DEM_2016
+ORDER BY PER_POINT_DIFF_2016 desc
+
+-- most hardcore Democratic counties
+SELECT *
+FROM GEO_DATA.PUBLIC.COUNTY_VOTING cv
+    INNER JOIN GEO_DATA.PUBLIC.US_COUNTIES usc ON REPLACE(usc.GEO_ID,'0500000US','')  = cv.fips
+WHERE PER_GOP_2016 < PER_DEM_2016
+ORDER BY PER_POINT_DIFF_2016 desc
+
+-- relative populations of all the GOP vs. Democratic counties (172M Democratic, 144M GOP)
+SELECT GOP_COUNTY, SUM(population)
+FROM GEO_DATA.PUBLIC.recent_hotspots
+    INNER JOIN GEO_DATA.PUBLIC.county_leans cl ON cl.county_id = recent_hotspots.county_id
+--WHERE date = '2020-03-25'
+WHERE date IN (SELECT DISTINCT TOP 1 date FROM GEO_DATA.PUBLIC.recent_hotspots ORDER BY 1 desc) -- to see the data from the X most recent dates
+GROUP BY GOP_COUNTY
+ORDER BY 2 desc
+
+-- relative populations of Blue vs. Red states (REd 179.6 vs Blue 138.8)
+SELECT   
+  CASE
+    WHEN ISO3166_2 IN ('AL','AK','AZ','AR','FL','GA','ID','IN','IA','KS','KY','LA','MI','MS','MT','NE','MO','OK','PA','TN','TX','UT','WV','WY','WI','NC','ND','SD','OH','SC') THEN true
+    WHEN ISO3166_2 IN ('CA','CO','CT','DC','DE','HI','IL','ME','MA','MN','NH','NM','NY','WA','MD','NV','NJ','RI','OR','VA','VT') THEN false
+    END as GOP_state
+, SUM(total_population)
+FROM COVID.PUBLIC.DEMOGRAPHICS
+GROUP BY GOP_state
+ORDER BY 2 desc
+;
+
+-- compare counties by state and county leanings
+SELECT 
+    county_hotspots.state_code
+  , county_hotspots.county
+  , CASE
+    WHEN county_hotspots.state_code IN ('AL','AK','AZ','AR','FL','GA','ID','IN','IA','KS','KY','LA','MI','MS','MT','NE','MO','OK','PA','TN','TX','UT','WV','WY','WI','NC','ND','SD','OH','SC') THEN true
+    WHEN county_hotspots.state_code IN ('CA','CO','CT','DC','DE','HI','IL','ME','MA','MN','NH','NM','NY','WA','MD','NV','NJ','RI','OR','VA','VT') THEN false
+    END as GOP_state
+  , sum(new_cases) as cases
+FROM GEO_DATA.PUBLIC.county_hotspots
+    INNER JOIN GEO_DATA.PUBLIC.county_leans cl ON cl.county_id = county_hotspots.county_id
+WHERE 1=1
+  AND date >= '2020-05-19'
+--  AND date IN (SELECT DISTINCT TOP 7 date FROM GEO_DATA.PUBLIC.county_hotspots ORDER BY 1 desc) -- to see the data from the X most recent dates
+  AND GOP_COUNTY = true
+  AND GOP_STATE = false
+--  AND population > 500000
+GROUP BY 
+      county_hotspots.state_code
+    , county_hotspots.county
+    , GOP_STATE
+--HAVING sum(new_cases) >= 1000
+ORDER BY cases desc
+
+-- compare counties by state and county leanings
+SELECT 
+    CASE
+    WHEN county_hotspots.state_code IN ('AL','AK','AZ','AR','FL','GA','ID','IN','IA','KS','KY','LA','MI','MS','MT','NE','MO','OK','PA','TN','TX','UT','WV','WY','WI','NC','ND','SD','OH','SC') THEN true
+    WHEN county_hotspots.state_code IN ('CA','CO','CT','DC','DE','HI','IL','ME','MA','MN','NH','NM','NY','WA','MD','NV','NJ','RI','OR','VA','VT') THEN false
+    END as GOP_state
+  , sum(population) as pop
+FROM GEO_DATA.PUBLIC.county_hotspots
+    INNER JOIN GEO_DATA.PUBLIC.county_leans cl ON cl.county_id = county_hotspots.county_id
+WHERE 1=1
+  AND date IN (SELECT DISTINCT TOP 1 date FROM GEO_DATA.PUBLIC.county_hotspots ORDER BY 1 desc) -- to see the data from the X most recent dates
+  AND GOP_COUNTY = false
+  AND GOP_STATE = true
+--  AND population > 500000
+GROUP BY GOP_STATE
+--HAVING sum(new_cases) >= 1000
+ORDER BY pop desc
+
+-- 113M in red/red
+-- 68M in red state, blue county
+-- 104M in blue/blue
+-- 31.7M in blue state, red county
+-- should normalize the per-county stats so that they are cases-per-1000 or similar. Otherwise the results are misleading due to the above numbers
+
+SELECT new_cases, cl.*
+FROM GEO_DATA.PUBLIC.county_hotspots
+    INNER JOIN GEO_DATA.PUBLIC.county_leans cl ON cl.county_id = county_hotspots.county_id
+--WHERE date = '2020-03-25'
+WHERE date IN (SELECT DISTINCT TOP 1 date FROM GEO_DATA.PUBLIC.recent_hotspots ORDER BY 1 desc) -- to see the data from the X most recent dates
+AND GOP_COUNTY = true
+ORDER BY 1 desc
+
+-- A tale of two Countries, by state
+SELECT sum(cases), sum(deaths)
+--SELECT DISTINCT state
+FROM COVID.PUBLIC.NYT_US_COVID19
+WHERE 1=1
+  AND date >= '2020-01-26'
+  AND ISO3166_2 IN ('AL','AK','AZ','AR','FL','GA','ID','IN','IA','KS','KY','LA','MI','MS','MT','NE','MO','OK','PA','TN','TX','UT','WV','WY','WI','NC','ND','SD','OH','SC')
+--  AND ISO3166_2 IN ('CA','CO','CT','DC','DE','HI','IL','ME','MA','MN','NH','NM','NY','WA','MD','NV','NJ','RI','OR','VA','VT')
+GROUP BY date
+ORDER BY date
+;
+
+-- A tale of two Countries, by county
+SELECT cases, deaths
+FROM red_vs_blue_counties
+WHERE 1=1
+  AND GOP_STATE = true -- Red/Red
+  AND GOP_COUNTY = true
+--  AND GOP_STATE = false -- Blue/Blue
+--  AND GOP_COUNTY = false
+--  AND GOP_STATE = true -- Misplaced Blue
+--  AND GOP_COUNTY = false
+--  AND GOP_STATE = false -- Misplaced Red
+--  AND GOP_COUNTY = true
+ORDER BY date
+;
+

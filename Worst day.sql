@@ -1,26 +1,4 @@
-/*
--- GRANT SELECT ON ALL TABLES IN SCHEMA "PUBLIC" TO ROLE PUBLIC;
-
--- total of US tests turning out positive
-WITH latest_data as 
-    (
-        SELECT DATE, SUM(IFNULL(TOTAL,0)) as total_tests, sum(IFNULL(POSITIVE,0)) as cases, sum(IFNULL(DEATH,0)) as deaths
-        FROM COVID.PUBLIC.CT_US_COVID_TESTS
-        WHERE DATE = (SELECT TOP 1 date FROM COVID.PUBLIC.CT_US_COVID_TESTS ORDER BY 1 desc)
-        GROUP BY DATE
-    )
-SELECT
-    latest_data.date
-  , latest_data.total_tests as total_tested
-  , latest_data.cases / total_tested
-FROM latest_data
-WHERE 1=1
-ORDER BY 1 desc
-;
-*/
-
-DROP TABLE IF EXISTS GEO_DATA.PUBLIC.daily_percentages;
-CREATE TABLE GEO_DATA.PUBLIC.daily_percentages as
+CREATE OR REPLACE TABLE GEO_DATA.PUBLIC.daily_percentages as
 (
   WITH state_date_matrix as
   (
@@ -99,12 +77,37 @@ FROM GEO_DATA.PUBLIC.DAILY_PERCENTAGES daily_percentages
 WHERE 1=1
     AND daily_percentages.arithmetic_daily_new_events = arithmetic_daily_new_events_join
 --    AND daily_percentages.arithmetic_relative_change_percent = arithmetic_relative_change_percent_join
---    AND daily_percentages.date = (SELECT TOP 1 date FROM COVID.PUBLIC.CT_US_COVID_TESTS ORDER BY 1 desc) ORDER BY arithmetic_daily_new_events desc -- to see only the states which are "moving worst day"
---    AND daily_percentages.state = 'GA'
-ORDER BY
+--    AND daily_percentages.date IN (SELECT DISTINCT TOP 3 date FROM COVID.PUBLIC.CT_US_COVID_TESTS ORDER BY 1 desc) ORDER BY daily_percentages.date desc, arithmetic_daily_new_events desc -- to see only the states which are "moving worst day"
+ORDER BY daily_percentages.date desc,
     daily_percentages.state
   , arithmetic_relative_change_percent desc -- 1st tiebreaker
   , arithmetic_daily_new_events desc
   , geometric_relative_change_percent desc -- 2nd tiebreaker
 ;
 
+
+/*
+-- GRANT SELECT ON ALL TABLES IN SCHEMA "PUBLIC" TO ROLE PUBLIC;
+
+-- total of US tests turning out positive
+WITH latest_data as 
+    (
+        SELECT DATE, SUM(IFNULL(TOTAL,0)) as total_tests, sum(IFNULL(POSITIVE,0)) as cases, sum(IFNULL(DEATH,0)) as deaths
+        FROM COVID.PUBLIC.CT_US_COVID_TESTS
+        WHERE DATE = (SELECT TOP 1 date FROM COVID.PUBLIC.CT_US_COVID_TESTS ORDER BY 1 desc)
+        GROUP BY DATE
+    )
+SELECT
+    latest_data.date
+  , latest_data.total_tests as total_tested
+  , latest_data.cases / total_tested
+FROM latest_data
+WHERE 1=1
+ORDER BY 1 desc
+;
+*/
+
+SELECT *
+FROM DAILY_PERCENTAGES 
+WHERE date IN (SELECT DISTINCT TOP 7 date FROM DAILY_PERCENTAGES ORDER BY 1 desc) -- to see the data from the X most recent dates
+ORDER BY arithmetic_relative_change_percent desc
