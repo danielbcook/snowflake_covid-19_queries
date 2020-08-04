@@ -1084,7 +1084,10 @@ CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.STATE_CASE_TRENDS as
     AND POSITIVE_SINCE_PREVIOUS_DAY /  TOTAL_SINCE_PREVIOUS_DAY < 1.0
 )
 
-SELECT * FROM STATE_CASE_TRENDS
+SELECT *
+FROM GEO_DATA.PUBLIC.STATE_CASE_TRENDS
+WHERE date = '2020-08-03'
+ORDER BY positive_growth desc
 
 CREATE OR REPLACE TEMPORARY TABLE GEO_DATA.PUBLIC.STATE_PER_CAPITA_WEIGHT as
 (
@@ -1128,7 +1131,7 @@ SELECT *
 FROM GEO_DATA.PUBLIC.COUNTY_VOTING cv
     INNER JOIN GEO_DATA.PUBLIC.US_COUNTIES usc ON REPLACE(usc.GEO_ID,'0500000US','')  = cv.fips
 WHERE PER_GOP_2016 > PER_DEM_2016
-ORDER BY PER_POINT_DIFF_2016 desc
+ORDER BY PER_POINT_DIFF_2016
 
 -- most hardcore Democratic counties
 SELECT *
@@ -1193,51 +1196,81 @@ FROM GEO_DATA.PUBLIC.county_hotspots
     INNER JOIN GEO_DATA.PUBLIC.county_leans cl ON cl.county_id = county_hotspots.county_id
 WHERE 1=1
   AND date IN (SELECT DISTINCT TOP 1 date FROM GEO_DATA.PUBLIC.county_hotspots ORDER BY 1 desc) -- to see the data from the X most recent dates
-  AND GOP_COUNTY = false
-  AND GOP_STATE = true
---  AND population > 500000
+  AND GOP_COUNTY = true
+  AND GOP_STATE = false
 GROUP BY GOP_STATE
---HAVING sum(new_cases) >= 1000
 ORDER BY pop desc
 
--- 113M in red/red
--- 68M in red state, blue county
--- 104M in blue/blue
--- 31.7M in blue state, red county
+-- 113.082294 in red/red
+-- 67.699837 in red state, blue county
+-- 104.691469 in blue/blue
+-- 31.751677 in blue state, red county
 -- should normalize the per-county stats so that they are cases-per-1000 or similar. Otherwise the results are misleading due to the above numbers
 
+-- newest hotspots based purely on count density
 SELECT new_cases, cl.*
 FROM GEO_DATA.PUBLIC.county_hotspots
     INNER JOIN GEO_DATA.PUBLIC.county_leans cl ON cl.county_id = county_hotspots.county_id
---WHERE date = '2020-03-25'
 WHERE date IN (SELECT DISTINCT TOP 1 date FROM GEO_DATA.PUBLIC.recent_hotspots ORDER BY 1 desc) -- to see the data from the X most recent dates
-AND GOP_COUNTY = true
-ORDER BY 1 desc
+--AND GOP_COUNTY = true
+ORDER BY new_cases/cl.population desc
+;
 
 -- A tale of two Countries, by state
-SELECT sum(cases), sum(deaths)
---SELECT DISTINCT state
-FROM COVID.PUBLIC.NYT_US_COVID19
+WITH pivoted as (
+  SELECT 
+      CASE
+      WHEN ISO3166_2 IN ('AL','AK','AZ','AR','FL','GA','ID','IN','IA','KS','KY','LA','MI','MS','MT','NE','MO','OK','PA','TN','TX','UT','WV','WY','WI','NC','ND','SD','OH','SC') THEN true
+      WHEN ISO3166_2 IN ('CA','CO','CT','DC','DE','HI','IL','ME','MA','MN','NH','NM','NY','WA','MD','NV','NJ','RI','OR','VA','VT') THEN false
+      END as GOP_state
+    , date
+    , sum(cases) as cases
+    , sum(deaths) as deaths
+  FROM COVID.PUBLIC.NYT_US_COVID19
+  WHERE 1=1
+    AND date >= '2020-01-26'
+    AND GOP_STATE IS NOT NULL
+  GROUP BY date, GOP_STATE
+  ORDER BY date, GOP_STATE
+)
+SELECT p1.date
+    , p1.cases as red_cases
+    , p1.deaths as red_deaths
+    , p2.cases as blue_cases
+    , p2.deaths as blue_deaths
+FROM pivoted p1
+    INNER JOIN pivoted p2 ON p1.date = p2.date
 WHERE 1=1
-  AND date >= '2020-01-26'
-  AND ISO3166_2 IN ('AL','AK','AZ','AR','FL','GA','ID','IN','IA','KS','KY','LA','MI','MS','MT','NE','MO','OK','PA','TN','TX','UT','WV','WY','WI','NC','ND','SD','OH','SC')
---  AND ISO3166_2 IN ('CA','CO','CT','DC','DE','HI','IL','ME','MA','MN','NH','NM','NY','WA','MD','NV','NJ','RI','OR','VA','VT')
-GROUP BY date
+    AND (p1.GOP_STATE = true)
+    AND (p2.GOP_STATE = false)
 ORDER BY date
 ;
 
 -- A tale of two Countries, by county
-SELECT cases, deaths
-FROM red_vs_blue_counties
+WITH pivoted as (
+  SELECT date, GOP_STATE, GOP_COUNTY, sum(cases) as cases, sum(deaths) as deaths
+  FROM red_vs_blue_counties
+  WHERE 1=1
+  GROUP BY date, GOP_STATE, GOP_COUNTY
+  ORDER BY GOP_STATE, GOP_COUNTY, date
+)
+SELECT p1.date
+    , p1.cases/113.082294 as true_red_cases
+    , p1.deaths/113.082294 as true_red_deaths
+    , p2.cases/104.691469 as true_blue_cases
+    , p2.deaths/104.691469 as true_blue_deaths
+    , p3.cases/67.699837 as misplaced_blue_cases
+    , p3.deaths/67.699837 as misplaced_blue_deaths
+    , p4.cases/31.751677 as misplaced_red_cases
+    , p4.deaths/31.751677 as misplaced_red_deaths
+FROM pivoted p1
+    INNER JOIN pivoted p2 ON p1.date = p2.date
+    INNER JOIN pivoted p3 ON p1.date = p3.date
+    INNER JOIN pivoted p4 ON p1.date = p4.date
 WHERE 1=1
-  AND GOP_STATE = true -- Red/Red
-  AND GOP_COUNTY = true
---  AND GOP_STATE = false -- Blue/Blue
---  AND GOP_COUNTY = false
---  AND GOP_STATE = true -- Misplaced Blue
---  AND GOP_COUNTY = false
---  AND GOP_STATE = false -- Misplaced Red
---  AND GOP_COUNTY = true
+    AND (p1.GOP_STATE = true AND p1.GOP_COUNTY = true)
+    AND (p2.GOP_STATE = false AND p2.GOP_COUNTY = false)
+    AND (p3.GOP_STATE = true AND p3.GOP_COUNTY = false)
+    AND (p4.GOP_STATE = false AND p4.GOP_COUNTY = true)
 ORDER BY date
 ;
-
